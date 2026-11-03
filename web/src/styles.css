@@ -20,3 +20,8 @@ button:disabled { opacity: .5; cursor: default; }
 .space.lucky { background: #f1ecff; } .space.jail { background: #eee; } .space.auction { background: #e8f6ee; } .space.start { background: #fff1e0; }
 .card { background: #f1ecff; border-radius: 6px; padding: 6px 10px; display: inline-block; }
 .buildings { color: #2b7a3d; }
+.trade { border: 2px solid #2b7a3d; background: #f3fbf5; border-radius: 8px; padding: 8px 12px; margin: 8px 0; }
+.trade h3 { margin: 4px 0; }
+.offers { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.offer { display: flex; flex-direction: column; gap: 2px; min-width: 140px; padding: 8px; border: 1px solid #bbb; border-radius: 8px; background: #fff; text-align: left; }
+.offer.chosen { border-color: #2b7a3d; box-shadow: 0 0 0 2px #2b7a3d55; }

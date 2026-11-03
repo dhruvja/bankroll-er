@@ -95,6 +95,17 @@ export async function property(table: string, action: 'build' | 'sell', space: n
   await (action === 'build' ? client.build(address, signer, space) : client.sell(address, signer, space));
 }
 
+/** Auction trade: the lander opens with one of its unbuilt properties; other seats offer one back. */
+export async function trade(table: string, action: 'open' | 'offer', space: number) {
+  const signer = await wallet(), address = new PublicKey(table);
+  await (action === 'open' ? client.openTrade(address, signer, space) : client.offerTrade(address, signer, space));
+}
+
+/** The lander accepts `seat`'s current offer of `space`. */
+export async function acceptTrade(table: string, seat: number, space: number) {
+  await client.acceptTrade(new PublicKey(table), await wallet(), seat, space);
+}
+
 export const subscribeTable = (table: string, onTable: (view: TableView) => void, onError: (error: Error) => void) =>
   client.subscribeTable(new PublicKey(table), onTable, onError);
 

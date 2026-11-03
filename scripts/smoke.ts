@@ -1,7 +1,9 @@
 /**
  * Devnet smoke.
  *   --check                                   read-only readiness (G7)
- *   --execute [--players 3] [--target 3000]   zero-SOL bots play a staked 1 USDC game (G8)
+ *   --execute [--players 3] [--target 3000] [--trades]
+ *                                             zero-SOL bots play a staked 1 USDC game (G8); with
+ *                                             --trades they trade on every Auction landing they can
  * Player wallets come from `.env` (SMOKE_PLAYER_<n>, base58 secret keys) and are created there if
  * missing. They never receive SOL; the admin only tops up their base USDC.
  */
@@ -13,7 +15,7 @@ import { createAssociatedTokenAccountIdempotentInstruction, createTransferInstru
 import { DELEGATION_PROGRAM_ID, EPHEMERAL_SPL_TOKEN_PROGRAM_ID } from '@magicblock-labs/ephemeral-rollups-sdk';
 import { ER_RPC, PUBLIC_VALIDATOR, RELAY_FEE, ROUTER_RPC, TOKEN_SCALE, WITHDRAW_MINIMUM, invariant } from '../shared/config';
 import {
-  PROGRAM_ID, canBuild, currentSeat, custodyAddress, delegationStatus, expectedPayouts, isActive, mintKey, netWorth, tableAddress, tokenAddress,
+  NO_OFFER, PROGRAM_ID, canBuild, currentSeat, tradeOffers, tradeable, custodyAddress, delegationStatus, expectedPayouts, isActive, mintKey, netWorth, tableAddress, tokenAddress,
   treasuryAddress, type TableView,
 } from '../shared/chain';
 import { board } from '../shared/board';
@@ -92,6 +94,7 @@ async function lamports(owner: PublicKey) {
 
 async function execute() {
   const playerCount = Number(args.value('players') ?? 3), target = Number(args.value('target') ?? 3000), entry = TOKEN_SCALE;
+  const trades = args.has('trades');
   invariant([2, 3, 4].includes(playerCount) && board.rules.targets.includes(target), 'Use --players 2-4 and --target 3000/5000/7000.');
   await requireDevnet();
   const admin = loadAdmin(), players = loadPlayers(playerCount), names = players.map((_, index) => `Bot ${index + 1}`);
@@ -143,7 +146,13 @@ async function execute() {
   // others must strike it with force_timeout.
   const idleSeat = playerCount - 1;
   let idled = false, finishedView: TableView | undefined, settle: SentTransaction | undefined, turns = 0;
-  const events = { builds: 0, sales: 0, bails: 0, jailTurnsServed: 0, cards: [] as number[], eliminations: [] as { seat: number; at: number }[] };
+  const events = { builds: 0, sales: 0, bails: 0, jailTurnsServed: 0, cards: [] as number[], eliminations: [] as { seat: number; at: number }[],
+    tradesOpened: 0, tradePasses: 0, offers: 0, offersReplaced: 0, emptyWindowsCancelled: 0,
+    trades: [] as { lander: number; seat: number; gave: number; took: number; signature: string; verified: boolean }[] };
+  let replaced = false;
+  /** A seat's unbuilt properties, cheapest first. */
+  const unbuilt = (view: TableView, owner: number) => board.spaces.filter(space => tradeable(view, owner, space.index))
+    .sort((a, b) => (a.price ?? 0) - (b.price ?? 0)).map(space => space.index);
   let lastCardNonce = 0;
   const signerFor = (wallet: string) => players.find(player => player.publicKey.toBase58() === wallet)!;
   /** Sends one bot action; true when it landed, false when it lost a race with the chain. */
@@ -152,7 +161,7 @@ async function execute() {
     catch (error) {
       // Racing the chain (a deadline not yet reached on the ER clock, a stage that already moved)
       // is expected; anything else is a real failure.
-      if (!(error instanceof ProgramError) || !/^(InvalidStage|TooEarly|InvalidPhase|Unauthorized) /.test(error.message)) throw error;
+      if (!(error instanceof ProgramError) || !/^(InvalidStage|TooEarly|InvalidPhase|Unauthorized|OffersClosed|OfferChanged) /.test(error.message)) throw error;
       console.log(`${label}: ${error.message}, retrying`);
       await pause(500);
       return false;
@@ -205,6 +214,48 @@ async function execute() {
       await attempt('decide', () => table.seats[seat].cash - price >= 100 ? client.buy(address, actor) : client.pass(address, actor));
       continue;
     }
+    if (table.stage === 'tradeopen') {
+      // Without --trades the lander always passes. With it, the lander offers its cheapest unbuilt property.
+      const give = unbuilt(table, seat)[0];
+      if (!trades || give === undefined) { if (await attempt('trade-pass', () => client.pass(address, actor))) events.tradePasses++; continue; }
+      if (await attempt('trade-open', () => client.openTrade(address, actor, give))) events.tradesOpened++;
+      continue;
+    }
+    if (table.stage === 'tradeoffers') {
+      const view = table, open = now() < view.trade.deadline - 2;
+      // Every other active seat offers its cheapest unbuilt property; the first one then replaces its
+      // offer once with its next property, so replacement runs on chain too.
+      const offerer = view.order.find(other => other !== seat && isActive(view, other) && view.trade.offers[other] === NO_OFFER && unbuilt(view, other).length > 0);
+      if (open && offerer !== undefined) {
+        if (await attempt('trade-offer', () => client.offerTrade(address, players[offerer], unbuilt(view, offerer)[0]))) events.offers++;
+        continue;
+      }
+      const switcher = tradeOffers(view).find(offer => unbuilt(view, offer.seat).length > 1);
+      if (open && !replaced && switcher) {
+        const next = unbuilt(view, switcher.seat).find(space => space !== switcher.space)!;
+        if (await attempt('trade-replace', () => client.offerTrade(address, players[switcher.seat], next))) { events.offersReplaced++; replaced = true; }
+        continue;
+      }
+      const pick = tradeOffers(view)[0];
+      if (!pick) {
+        if (now() < view.trade.deadline + 1) { await pause(500); continue; }
+        if (await attempt('timeout', () => client.forceTimeout(address, players[(seat + 1) % playerCount]))) events.emptyWindowsCancelled++;
+        continue;
+      }
+      let accepted: SentTransaction | undefined;
+      if (!(await attempt('trade-accept', async () => (accepted = await client.acceptTrade(address, actor, pick.seat, pick.space))))) continue;
+      // Re-read until the ER shows the swap: both properties moved and both sides got the $100 bonus.
+      let verified = false;
+      for (let poll = 0; poll < 40 && !verified; poll++) {
+        const after = await client.readTable(address);
+        verified = after.board[view.trade.space].owner === pick.seat && after.board[pick.space].owner === seat
+          && after.seats[seat].cash === view.seats[seat].cash + board.rules.tradeBonus
+          && after.seats[pick.seat].cash === view.seats[pick.seat].cash + board.rules.tradeBonus;
+        if (!verified) await pause(500);
+      }
+      events.trades.push({ lander: seat, seat: pick.seat, gave: view.trade.space, took: pick.space, signature: accepted!.signature, verified });
+      continue;
+    }
     throw new Error(`Unexpected stage ${table.stage}.`);
   }
   invariant(finishedView && settle, 'No settlement.');
@@ -232,6 +283,7 @@ async function execute() {
       feeAtLeast3Percent: expected.treasury >= fee,
       idleSeatStruck: table.seats[idleSeat].strikes >= 1,
       endedByTargetOrBankruptcy: endedBy !== 'idle',
+      ...(trades ? { tradeCompleted: events.trades.length > 0 && events.trades.every(trade => trade.verified) } : {}),
     };
     if (Object.values(assertions).every(Boolean)) break;
     await pause(500);
@@ -264,7 +316,7 @@ async function execute() {
     players: players.map((player, seat) => ({ seat, wallet: player.publicKey.toBase58(), name: names[seat], finalCash: finishedView.seats[seat].cash,
       eliminatedAt: finishedView.seats[seat].eliminatedAt, strikes: finishedView.seats[seat].strikes, payout: usdc(expected.payouts[seat]),
       erBefore: usdc(before.players[seat]), erAfter: usdc(after.players[seat]), lamports: lamportsAfter[seat] })),
-    pot: usdc(pot), treasuryDelta: usdc(after.treasury - before.treasury), feeBps: 300, rounds: finishedView.round, rolls: turns, endedBy, events,
+    tradesMode: trades, pot: usdc(pot), treasuryDelta: usdc(after.treasury - before.treasury), feeBps: 300, rounds: finishedView.round, rolls: turns, endedBy, events,
     assertions: { ...assertions, withdrawLanded, zeroSol },
     withdraw: { seat: withdrawer.seat, amount: usdc(withdrawAmount), baseBefore: usdc(baseBefore), baseAfter: usdc(baseAfter) },
     signatures: { base, payments: paymentSignatures, settle: settle.signature, er: sent.map(tx => ({ label: tx.label, signature: tx.signature, ms: tx.confirmedAt - tx.sentAt })),
@@ -276,4 +328,4 @@ async function execute() {
 
 if (args.has('check')) await check();
 else if (args.has('execute')) await execute();
-else throw new Error('Usage: smoke --check | --execute [--players N] [--target 3000]');
+else throw new Error('Usage: smoke --check | --execute [--players N] [--target 3000] [--trades]');

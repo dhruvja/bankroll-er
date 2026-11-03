@@ -4,7 +4,7 @@ import { unpackAccount } from '@solana/spl-token';
 import { DELEGATION_PROGRAM_ID, EPHEMERAL_SPL_TOKEN_PROGRAM_ID } from '@magicblock-labs/ephemeral-rollups-sdk';
 import { BASE_RPC, DEVNET_GENESIS, ER_RPC, PUBLIC_VALIDATOR, invariant } from './config';
 import {
-  PHASE_OFFSET, PROGRAM_ID, accountsFor, buildInstruction, custodyAddress, decodeTable, delegationStatus, idl,
+  NO_OFFER, PHASE_OFFSET, PROGRAM_ID, accountsFor, buildInstruction, custodyAddress, decodeTable, delegationStatus, idl,
   currentSeat, isActive, mintKey, settleRemaining, tableAddress, tokenAddress, u64, type TableView,
 } from './chain';
 import { board } from './board';
@@ -180,6 +180,10 @@ export class BankrollClient implements PaymentClient {
   build(table: PublicKey, signer: Signer, space: number) { return this.act('build', 'build', table, signer, { space }); }
   sell(table: PublicKey, signer: Signer, space: number) { return this.act('sell', 'sell', table, signer, { space }); }
   payBail(table: PublicKey, signer: Signer) { return this.act('bail', 'pay_bail', table, signer); }
+  openTrade(table: PublicKey, signer: Signer, space: number) { return this.act('trade-open', 'open_trade', table, signer, { space }); }
+  offerTrade(table: PublicKey, signer: Signer, space: number) { return this.act('trade-offer', 'offer_trade', table, signer, { space }); }
+  /** Accepts `seat`'s offer of `space`; fails if that seat has since replaced it. */
+  acceptTrade(table: PublicKey, signer: Signer, seat: number, space: number) { return this.act('trade-accept', 'accept_trade', table, signer, { seat, space }); }
   forceTimeout(table: PublicKey, signer: Signer) { return this.act('timeout', 'force_timeout', table, signer); }
   cancel(table: PublicKey, signer: Signer) { return this.act('cancel', 'cancel_or_expire', table, signer); }
   refund(table: PublicKey, signer: Signer, view: TableView, seat: number) {
@@ -211,7 +215,9 @@ export function nextCrank(table: TableView, wallet: string, now: number): { acti
         const wait = seat === currentSeat(table) ? rules.vrfRetry : 3 * rules.vrfRetry;
         return isActive(table, seat) ? { action: 'retry-roll', at: table.vrfRequestedAt + wait } : { action: 'timeout', at: idle };
       }
-      return { action: 'timeout', at: Math.min(idle, table.stageDeadline) };
+      // An offer window that closes empty is cancelled at its own deadline, before the lander's.
+      const emptyOffers = table.stage === 'tradeoffers' && table.trade.offers.every(offer => offer === NO_OFFER);
+      return { action: 'timeout', at: Math.min(idle, emptyOffers ? table.trade.deadline : table.stageDeadline) };
     }
     default: return undefined;
   }

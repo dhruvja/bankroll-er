@@ -14,6 +14,8 @@ export const idl = idlJson as Idl;
 export const PROGRAM_ID = new PublicKey(idl.address);
 export const mintKey = new PublicKey(DEVNET_USDC);
 export const NO_OWNER = 255;
+/** `Trade.offers` entry for "no offer" (space 0, Start, is never a property). */
+export const NO_OFFER = 0;
 /** Byte offset of `Table.phase` (8-byte discriminator, u16 index, u8 bump). */
 export const PHASE_OFFSET = 11;
 export const PHASES = ['free', 'lobby', 'playing', 'finished', 'refunding'] as const;
@@ -42,6 +44,7 @@ interface RawTable {
   rolls_this_turn: number; extra_roll: boolean; vrf_purpose: Record<string, unknown>; vrf_requested_at: BN;
   last_roll: number; last_card: number; elimination_seq: number; ended_at: BN;
   seats: RawSeat[]; board: { owner: number; buildings: number }[];
+  trade: { space: number; offers: number[]; deadline: BN };
 }
 
 export interface SeatView {
@@ -57,6 +60,9 @@ export interface TableView {
   /** Lucky card (1–12) drawn by the latest roll, 0 when none. */
   lastCard: number;
   eliminationSeq: number; endedAt: number; seats: SeatView[]; board: { owner: number; buildings: number }[];
+  /** Live only in `tradeoffers`: the lander's offered space, each seat's counter-offer (`NO_OFFER`
+   * for none) and when offers close. The lander may decide until `stageDeadline`. */
+  trade: { space: number; offers: number[]; deadline: number };
 }
 
 const variant = (value: Record<string, unknown>) => Object.keys(value)[0].replaceAll('_', '').toLowerCase();
@@ -80,6 +86,7 @@ export function decodeTable(address: PublicKey, data: Buffer): TableView {
       eliminatedAt: seat.eliminated_at, payout: seat.payout.toNumber(),
     })),
     board: raw.board.map(lot => ({ owner: lot.owner, buildings: lot.buildings })),
+    trade: { space: raw.trade.space, offers: raw.trade.offers.slice(0, count), deadline: raw.trade.deadline.toNumber() },
   };
 }
 
@@ -119,6 +126,18 @@ export function canBuild(table: TableView, seat: number, index: number): boolean
     && Boolean(space.group && ownsGroup(table, seat, space.group)) && table.seats[seat].cash >= (space.buildingCost ?? 0);
 }
 
+/** Mirrors `Table::tradeable`: a property `seat` owns with no buildings. */
+export const tradeable = (table: TableView, seat: number, index: number) =>
+  table.board[index]?.owner === seat && table.board[index].buildings === 0;
+
+/** The offers on the table in turn order after the lander, as (seat, space). */
+export function tradeOffers(table: TableView): { seat: number; space: number }[] {
+  const lander = currentSeat(table), n = table.order.length;
+  return Array.from({ length: n - 1 }, (_, step) => table.order[(table.turn + 1 + step) % n])
+    .filter(seat => seat !== lander && (table.trade.offers[seat] ?? NO_OFFER) !== NO_OFFER)
+    .map(seat => ({ seat, space: table.trade.offers[seat] }));
+}
+
 /** Mirrors `Table::payouts` so clients and the smoke can check settle independently. */
 export function expectedPayouts(table: TableView): { payouts: number[]; treasury: number } {
   const n = table.playerCount, pot = table.entry * n, row = SHARES_BPS[n];
@@ -140,7 +159,8 @@ export function expectedPayouts(table: TableView): { payouts: number[]; treasury
 }
 
 export type InstructionName = 'create_table' | 'delegate_table' | 'open_table' | 'join_table' | 'cancel_or_expire' | 'refund_player'
-  | 'start_game' | 'roll' | 'buy' | 'pass' | 'build' | 'sell' | 'pay_bail' | 'force_timeout' | 'settle';
+  | 'start_game' | 'roll' | 'buy' | 'pass' | 'build' | 'sell' | 'pay_bail' | 'open_trade' | 'offer_trade' | 'accept_trade'
+  | 'force_timeout' | 'settle';
 
 /** Every account name the IDL uses, resolved for one table and one acting wallet. */
 export function accountsFor(table: PublicKey, actor: PublicKey, recipient = actor): Record<string, PublicKey> {

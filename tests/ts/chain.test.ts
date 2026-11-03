@@ -8,8 +8,8 @@ import BN from 'bn.js';
 import { Keypair, PublicKey } from '@solana/web3.js';
 import { BOARD_SHA256, board, defaultTarget } from '../../shared/board';
 import {
-  NO_OWNER, PROGRAM_ID, accountsFor, buildInstruction, canBuild, currentSeat, custodyAddress, decodeTable, expectedPayouts, idl, netWorth,
-  rent, saleValue, settleRemaining, tableAddress, tokenAddress, type TableView,
+  NO_OFFER, NO_OWNER, PROGRAM_ID, accountsFor, buildInstruction, canBuild, currentSeat, custodyAddress, decodeTable, expectedPayouts, idl, netWorth,
+  rent, saleValue, settleRemaining, tableAddress, tokenAddress, tradeOffers, tradeable, type TableView,
 } from '../../shared/chain';
 import { nextCrank } from '../../shared/client';
 import { BOARD_RS, renderBoardRs } from '../../scripts/gen-board';
@@ -109,6 +109,26 @@ test('the crank picks the liveness action each participant may send and when', a
   const refunding = { ...view, phase: 'refunding' as const, seats: view.seats.map((seat, index) => ({ ...seat, refunded: index === 0 })) };
   assert.deepEqual(nextCrank(refunding, me, 7), { action: { refund: 1 }, at: 7 });
   assert.equal(nextCrank({ ...view, phase: 'free' }, me, 7), undefined);
+  const offers = { ...view, stage: 'tradeoffers' as const, stageDeadline: 1035, trade: { space: 1, offers: [0, 0, 0], deadline: 1020 } };
+  assert.deepEqual(nextCrank(offers, me, 1000), { action: 'timeout', at: 1020 }, 'an empty offer window cancels when it closes');
+  assert.deepEqual(nextCrank({ ...offers, trade: { ...offers.trade, offers: [0, 2, 0] } }, me, 1000), { action: 'timeout', at: 1035 }, 'with offers, the lander decides until the stage deadline');
+  assert.deepEqual(nextCrank({ ...view, stage: 'tradeopen', stageDeadline: 1020 }, me, 1000), { action: 'timeout', at: 1020 });
+});
+
+test('the trade decodes, and offers list in turn order after the lander', async () => {
+  const { raw } = encodedTable({ phase: { Playing: {} }, stage: { TradeOffers: {} }, trade: { space: 14, offers: [1, 17, 0, 0], deadline: new BN(1020) } });
+  const view = decodeTable(tableAddress(5), await new BorshAccountsCoder(idl).encode('Table', raw));
+  assert.deepEqual(view.trade, { space: 14, offers: [1, 17, 0], deadline: 1020 }, 'offers are trimmed to the seated players');
+  assert.equal(NO_OFFER, 0);
+  // Turn order [2, 0, 1]: seat 2 landed, so seat 0 then seat 1 are listed.
+  assert.deepEqual(tradeOffers(view), [{ seat: 0, space: 1 }, { seat: 1, space: 17 }]);
+  // Seat 0 landed: the list starts after it, at seat 1, and skips seat 2's missing offer.
+  assert.deepEqual(tradeOffers({ ...view, turn: 1, trade: { ...view.trade, offers: [0, 1, 0] } }), [{ seat: 1, space: 1 }]);
+  const lander = currentSeat(view);
+  view.board[14] = { owner: lander, buildings: 0 };
+  assert.equal(tradeable(view, lander, 14), true);
+  view.board[14].buildings = 1;
+  assert.equal(tradeable(view, lander, 14), false, 'a built property cannot be traded');
 });
 
 test('jail turns and the Lucky card decode, and the deck matches the frozen economy', async () => {

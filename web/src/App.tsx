@@ -2,8 +2,8 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import type { Keypair } from '@solana/web3.js';
 import { board, defaultTarget, isProperty } from '../../shared/board';
 import { ENTRIES, PROTOCOL_FEE_BPS, RELAY_FEE, TOKEN_SCALE, WITHDRAW_MINIMUM } from '../../shared/config';
-import { NO_OWNER, canBuild, currentSeat, expectedPayouts, netWorth, rent, saleValue, type TableView } from '../../shared/chain';
-import { act, deposit, getWalletInfo, joinTable, openTable, property, runCrank, subscribeTable, wallet, withdraw, type WalletInfo } from './lib/game';
+import { NO_OFFER, NO_OWNER, canBuild, currentSeat, expectedPayouts, isActive, netWorth, rent, saleValue, tradeOffers, tradeable, type TableView } from '../../shared/chain';
+import { acceptTrade, act, deposit, getWalletInfo, joinTable, openTable, property, runCrank, subscribeTable, trade, wallet, withdraw, type WalletInfo } from './lib/game';
 import { exportWallet } from './lib/wallet';
 
 const usdc = (atoms: number) => (atoms / TOKEN_SCALE).toFixed(2);
@@ -126,6 +126,8 @@ function TableScreen({ table, nonce, me, signer, refresh }: { table: string; non
         <div>
           <Board view={view} />
           <p>{view.stage === 'ordering' ? 'Drawing turn order…' : view.stage === 'rolling' ? 'Rolling…'
+            : view.stage === 'tradeopen' ? `${view.seats[turnSeat].name} landed on Auction and may offer a trade · ${left}s`
+            : view.stage === 'tradeoffers' ? `Auction: ${view.seats[turnSeat].name} offers ${board.spaces[view.trade.space].name}`
             : `${view.seats[turnSeat].name} to ${view.stage === 'buydecision' ? 'decide' : view.seats[turnSeat].jailTurns ? 'bail or serve a jail turn' : 'roll'} · ${left}s`}
             {view.lastRoll ? ` · last roll ${view.lastRoll}` : ''}</p>
           {card && <p className="card">{view.seats[card.seat].name} drew a Lucky card: {board.luckyDeck[card.card - 1].text}</p>}
@@ -143,6 +145,11 @@ function TableScreen({ table, nonce, me, signer, refresh }: { table: string; non
             return <div className="row"><button disabled={busy || view.seats[seat].cash < (space.price ?? 0)} onClick={action('buy')}>Buy {space.name} for {money(space.price ?? 0)}</button>
               <button disabled={busy} onClick={action('pass')}>Pass</button></div>;
           })()}
+          {(view.stage === 'tradeopen' || view.stage === 'tradeoffers') && seat >= 0 && (
+            <TradeSheet view={view} seat={seat} now={now} busy={busy}
+              onOpen={space => void run(() => trade(table, 'open', space))} onOffer={space => void run(() => trade(table, 'offer', space))}
+              onAccept={(from, space) => void run(() => acceptTrade(table, from, space))} onPass={action('pass')} />
+          )}
           {myTurn && view.seats[seat].cash < 0 && <p className="error">You are {money(view.seats[seat].cash)} in debt: you can’t buy, build or pay bail until you sell.
             Below {money(board.rules.bankruptCashBelow)}, or at a net worth of $0, you are bankrupt.</p>}
           {myTurn && (view.stage === 'preroll' || view.stage === 'buydecision') && (
@@ -171,6 +178,74 @@ function useDrawnCard(view?: TableView) {
     else if (before?.stage === 'rolling' && view.vrfNonce === before.vrfNonce) setCard(view.lastCard ? { seat: currentSeat(before), card: view.lastCard } : undefined);
   }, [view]);
   return card;
+}
+
+const spaceLabel = (index: number) => {
+  const space = board.spaces[index];
+  return `${space.name} (${space.group ?? space.kind}, ${money(space.price ?? 0)})`;
+};
+
+/** Whether receiving `gain` would give `seat` a whole city group (mirrors the bots' `completes`). */
+function completesGroup(view: TableView, seat: number, gain: number) {
+  const space = board.spaces[gain];
+  return space.kind === 'city' && Boolean(space.group) && board.groups[space.group!].every(member => member === gain || view.board[member].owner === seat);
+}
+
+/** The Auction trade. The lander picks one unbuilt property to offer, or skips; every other active
+ * seat may offer one of its own unbuilt properties back (and replace it) until offers close; the
+ * lander accepts one offer or cancels. A completed swap pays both sides the trade bonus. */
+function TradeSheet({ view, seat, now, busy, onOpen, onOffer, onAccept, onPass }: {
+  view: TableView; seat: number; now: number; busy: boolean;
+  onOpen: (space: number) => void; onOffer: (space: number) => void; onAccept: (seat: number, space: number) => void; onPass: () => void;
+}) {
+  const lander = currentSeat(view), mine = board.spaces.filter(space => tradeable(view, seat, space.index)), bonus = money(board.rules.tradeBonus);
+  const offersLeft = Math.max(0, Math.ceil(view.trade.deadline - now)), decideLeft = Math.max(0, Math.ceil(view.stageDeadline - now));
+  if (view.stage === 'tradeopen') {
+    if (seat !== lander) return <p className="hint">{view.seats[lander].name} is choosing a property to put up for trade.</p>;
+    return (
+      <div className="trade">
+        <h3>Auction: offer a property for a swap</h3>
+        <p className="hint">Pick one of your properties without buildings. The others can each offer one of theirs back, and you choose which offer to
+          take. A completed swap pays both of you {bonus}. Skipping does nothing; letting the timer run out costs a strike.</p>
+        <div className="offers">{mine.map(space => (
+          <button key={space.index} className="offer" disabled={busy} onClick={() => onOpen(space.index)}>
+            <b>{space.name}</b><small>{space.group ?? space.kind} · {money(space.price ?? 0)}</small></button>))}</div>
+        <button disabled={busy} onClick={onPass}>Skip the trade</button>
+      </div>
+    );
+  }
+  const offers = tradeOffers(view), give = view.trade.space, offering = view.trade.offers[seat] ?? NO_OFFER;
+  if (seat === lander) return (
+    <div className="trade">
+      <h3>You offered {spaceLabel(give)}</h3>
+      <p className="hint">{offersLeft ? `Offers close in ${offersLeft}s.` : 'Offers are closed.'} {offers.length ? `Decide within ${decideLeft}s or the trade is cancelled with a strike.` : 'If nobody offers, the trade is cancelled with no strike.'}</p>
+      <div className="offers">{offers.map(offer => (
+        <div key={offer.seat} className="offer">
+          <span><span className="dot" style={{ background: SEAT_COLORS[offer.seat] }} />{view.seats[offer.seat].name} offers</span>
+          <b>{board.spaces[offer.space].name}</b><small>{spaceLabel(offer.space)}</small>
+          {completesGroup(view, seat, offer.space) && <small className="buildings">Completes your {board.spaces[offer.space].group} group</small>}
+          <button disabled={busy} onClick={() => onAccept(offer.seat, offer.space)}>Swap for it (+{bonus} each)</button>
+        </div>))}
+        {!offers.length && <p className="hint">Waiting for offers…</p>}</div>
+      <button disabled={busy} onClick={onPass}>Cancel the trade</button>
+    </div>
+  );
+  if (!isActive(view, seat)) return null;
+  return (
+    <div className="trade">
+      <h3>{view.seats[lander].name} offers {spaceLabel(give)}</h3>
+      {completesGroup(view, seat, give) && <p className="buildings">It would complete your {board.spaces[give].group} group.</p>}
+      {offersLeft ? <>
+        <p className="hint">Offer one of your properties without buildings in return; you can change it until offers close in {offersLeft}s.
+          If {view.seats[lander].name} picks yours, you swap and both get {bonus}.</p>
+        {mine.length ? <div className="offers">{mine.map(space => (
+          <button key={space.index} className={`offer${offering === space.index ? ' chosen' : ''}`} disabled={busy || offering === space.index} onClick={() => onOffer(space.index)}>
+            <b>{space.name}</b><small>{space.group ?? space.kind} · {money(space.price ?? 0)}</small>
+            <small>{offering === space.index ? 'Your offer' : offering !== NO_OFFER ? 'Offer this instead' : 'Offer'}</small></button>))}</div>
+          : <p className="hint">You have no property without buildings to offer.</p>}
+      </> : <p className="hint">Offers are closed. {view.seats[lander].name} is deciding{offering !== NO_OFFER ? ` on your ${board.spaces[offering].name}` : ''}.</p>}
+    </div>
+  );
 }
 
 function Holdings({ view, seat, canBuildNow, busy, onBuild, onSell }: {
