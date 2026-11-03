@@ -1,0 +1,20 @@
+:root { font-family: system-ui, sans-serif; color: #1d1d1f; background: #f6f4ee; }
+body { margin: 0; }
+main { max-width: 960px; margin: 0 auto; padding: 16px; }
+header { display: flex; align-items: baseline; gap: 12px; }
+header h1 { cursor: pointer; margin: 0 0 8px; }
+.panel { background: #fff; border-radius: 10px; padding: 16px; margin: 12px 0; box-shadow: 0 1px 3px #0002; }
+.panel label { display: block; margin: 8px 0; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 8px 0; }
+.mono { font-family: ui-monospace, monospace; word-break: break-all; font-size: 13px; }
+.hint { color: #666; font-size: 13px; }
+.error { color: #b00020; }
+button { padding: 6px 12px; border-radius: 6px; border: 1px solid #999; background: #fafafa; cursor: pointer; }
+button:disabled { opacity: .5; cursor: default; }
+.players { border-collapse: collapse; width: 100%; margin: 8px 0; }
+.players td, .players th { text-align: left; padding: 4px 8px; border-bottom: 1px solid #eee; }
+.players tr.turn { background: #fff6d6; }
+.dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 4px; }
+.board { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin: 12px 0; }
+.space { border: 2px solid #ddd; border-radius: 6px; padding: 4px; min-height: 64px; display: flex; flex-direction: column; font-size: 12px; }
+.space.lucky { background: #f1ecff; } .space.jail { background: #eee; } .space.auction { background: #e8f6ee; } .space.start { background: #fff1e0; }

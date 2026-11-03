@@ -189,22 +189,30 @@ async function execute() {
   }
   invariant(finishedView && settle, 'No settlement.');
 
-  // Exact settlement: independent payout math, ER balances, fee, custody and table state.
+  // Exact settlement: independent payout math, ER balances, fee, custody and table state. ER reads
+  // can trail a confirmed signature briefly, so poll until the settled state is visible.
   const expected = expectedPayouts(finishedView);
-  table = await client.readTable(address);
-  const after = { players: await Promise.all(players.map(player => client.erTokenBalance(player.publicKey))), treasury: await client.erTokenBalance(treasury) };
-  const custodyAfter = await client.erTokenBalance(address);
   const pot = entry * playerCount, fee = Math.floor(pot * 300 / 10_000);
-  const assertions = {
-    tableFree: table.phase === 'free' && table.gameNonce === nonce,
-    custodyZero: custodyAfter === 0n,
-    payoutsRecorded: table.seats.every((seat, index) => seat.payout === expected.payouts[index]),
-    playerBalancesExact: players.every((_, index) => after.players[index] - before.players[index] === BigInt(expected.payouts[index] - entry)),
-    treasuryExact: after.treasury - before.treasury === BigInt(expected.treasury),
-    feeAtLeast3Percent: expected.treasury >= fee,
-    idleSeatStruck: table.seats[idleSeat].strikes >= 1,
-  };
-  invariant(Object.values(assertions).every(Boolean), `Settlement mismatch: ${JSON.stringify({ assertions, expected, before, after })}`);
+  let after = { players: before.players, treasury: before.treasury }, custodyAfter = -1n;
+  let assertions: Record<string, boolean> = {};
+  for (let poll = 0; poll < 40; poll++) {
+    table = await client.readTable(address);
+    after = { players: await Promise.all(players.map(player => client.erTokenBalance(player.publicKey))), treasury: await client.erTokenBalance(treasury) };
+    custodyAfter = await client.erTokenBalance(address);
+    assertions = {
+      tableFree: table.phase === 'free' && table.gameNonce === nonce,
+      custodyZero: custodyAfter === 0n,
+      payoutsRecorded: table.seats.every((seat, index) => seat.payout === expected.payouts[index]),
+      playerBalancesExact: players.every((_, index) => after.players[index] - before.players[index] === BigInt(expected.payouts[index] - entry)),
+      treasuryExact: after.treasury - before.treasury === BigInt(expected.treasury),
+      feeAtLeast3Percent: expected.treasury >= fee,
+      idleSeatStruck: table.seats[idleSeat].strikes >= 1,
+    };
+    if (Object.values(assertions).every(Boolean)) break;
+    await pause(500);
+  }
+  const json = (value: unknown) => JSON.stringify(value, (_key, item: unknown) => typeof item === 'bigint' ? item.toString() : item);
+  invariant(Object.values(assertions).every(Boolean), `Settlement mismatch: ${json({ assertions, expected, before, after, custodyAfter, table })}`);
 
   // The best-paid non-winner withdraws to base (sponsored, so still zero SOL).
   const ranked = expected.payouts.map((payout, seat) => ({ payout, seat })).sort((a, b) => b.payout - a.payout);
@@ -222,7 +230,7 @@ async function execute() {
 
   const lamportsAfter = await Promise.all(players.map(player => lamports(player.publicKey)));
   const zeroSol = lamportsAfter.every(value => value.base === 0 && value.er === 0);
-  invariant(zeroSol, `A player wallet gained lamports: ${JSON.stringify(lamportsAfter)}`);
+  invariant(zeroSol, `A player wallet gained lamports: ${json(lamportsAfter)}`);
   const history = await client.er.getSignaturesForAddress(address, { limit: 1000 }, 'confirmed');
   const ours = new Set(sent.map(tx => tx.signature));
   const result = {
