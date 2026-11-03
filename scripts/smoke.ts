@@ -231,7 +231,8 @@ async function execute() {
   const lamportsAfter = await Promise.all(players.map(player => lamports(player.publicKey)));
   const zeroSol = lamportsAfter.every(value => value.base === 0 && value.er === 0);
   invariant(zeroSol, `A player wallet gained lamports: ${json(lamportsAfter)}`);
-  const history = await client.er.getSignaturesForAddress(address, { limit: 1000 }, 'confirmed');
+  // Table history newest first, down to this game's open; everything not sent by the bots is a VRF callback.
+  const history = await client.er.getSignaturesForAddress(address, { limit: 1000, until: sent[0].signature }, 'confirmed');
   const ours = new Set(sent.map(tx => tx.signature));
   const result = {
     ok: true, at: new Date().toISOString(), program: PROGRAM_ID.toBase58(), table: { index: free[0].index, address: address.toBase58(), gameNonce: nonce },
