@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import type { Keypair } from '@solana/web3.js';
 import { board, defaultTarget, isProperty } from '../../shared/board';
 import { ENTRIES, PROTOCOL_FEE_BPS, RELAY_FEE, TOKEN_SCALE, WITHDRAW_MINIMUM } from '../../shared/config';
@@ -95,6 +95,7 @@ function TableScreen({ table, nonce, me, signer, refresh }: { table: string; non
   const { busy, error, run } = useBusy(), now = useNow(), [name, setName] = useState('');
   useEffect(() => subscribeTable(table, next => { setView(next); setReadError(undefined); }, failure => setReadError(failure.message)), [table]);
   const seat = view ? view.seats.findIndex(item => item.wallet === me) : -1, current = view && nonce === view.gameNonce;
+  const card = useDrawnCard(view);
   useEffect(() => (current && seat >= 0 ? runCrank(table, signer) : undefined), [table, signer, current, seat]);
   useEffect(() => { if (view?.phase === 'free') refresh(); }, [view?.phase, refresh]);
   if (!view) return <section className="panel">{readError ?? 'Loading table…'}</section>;
@@ -127,11 +128,13 @@ function TableScreen({ table, nonce, me, signer, refresh }: { table: string; non
           <p>{view.stage === 'ordering' ? 'Drawing turn order…' : view.stage === 'rolling' ? 'Rolling…'
             : `${view.seats[turnSeat].name} to ${view.stage === 'buydecision' ? 'decide' : view.seats[turnSeat].jailTurns ? 'bail or serve a jail turn' : 'roll'} · ${left}s`}
             {view.lastRoll ? ` · last roll ${view.lastRoll}` : ''}</p>
-          {view.lastCard > 0 && <p className="card">Lucky card: {board.luckyDeck[view.lastCard - 1].text}</p>}
+          {card && <p className="card">{view.seats[card.seat].name} drew a Lucky card: {board.luckyDeck[card.card - 1].text}</p>}
           {myTurn && view.stage === 'preroll' && (view.seats[seat].jailTurns > 0 ? (
             <div className="row">
               <span>In jail, {view.seats[seat].jailTurns} turn{view.seats[seat].jailTurns > 1 ? 's' : ''} left.</span>
-              <button disabled={busy || view.seats[seat].cash < board.rules.bail} onClick={action('bail')}>Pay {money(board.rules.bail)} bail</button>
+              <button disabled={busy || view.seats[seat].cash < board.rules.bail} onClick={action('bail')}
+                title={netWorth(view, seat) - board.rules.bail <= 0 ? 'Bail would leave your net worth at $0 or less: you would be bankrupt.' : undefined}>
+                Pay {money(board.rules.bail)} bail{netWorth(view, seat) - board.rules.bail <= 0 ? ' (bankrupts you)' : ''}</button>
               <button disabled={busy} onClick={action('roll')}>Serve this turn</button>
             </div>
           ) : <button disabled={busy} onClick={action('roll')}>{view.rollsThisTurn ? 'Roll again (you rolled a 6)' : 'Roll'}</button>)}
@@ -153,6 +156,21 @@ function TableScreen({ table, nonce, me, signer, refresh }: { table: string; non
       {error && <p className="error">{error}</p>}
     </section>
   );
+}
+
+/** The Lucky card the latest roll callback drew and who drew it. `last_card` outlives the turn
+ * (a jailed roll or bail doesn't clear it), so the card is tied to the roll that produced it and
+ * hidden once the next roll is requested. */
+function useDrawnCard(view?: TableView) {
+  const previous = useRef<TableView>(undefined), [card, setCard] = useState<{ seat: number; card: number }>();
+  useEffect(() => {
+    const before = previous.current;
+    previous.current = view;
+    if (!view || view.phase !== 'playing') { setCard(undefined); return; }
+    if (view.stage === 'rolling') setCard(undefined);
+    else if (before?.stage === 'rolling' && view.vrfNonce === before.vrfNonce) setCard(view.lastCard ? { seat: currentSeat(before), card: view.lastCard } : undefined);
+  }, [view]);
+  return card;
 }
 
 function Holdings({ view, seat, canBuildNow, busy, onBuild, onSell }: {

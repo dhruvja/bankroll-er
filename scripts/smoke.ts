@@ -146,14 +146,16 @@ async function execute() {
   const events = { builds: 0, sales: 0, bails: 0, jailTurnsServed: 0, cards: [] as number[], eliminations: [] as { seat: number; at: number }[] };
   let lastCardNonce = 0;
   const signerFor = (wallet: string) => players.find(player => player.publicKey.toBase58() === wallet)!;
+  /** Sends one bot action; true when it landed, false when it lost a race with the chain. */
   const attempt = async (label: string, run: () => Promise<SentTransaction>) => {
-    try { record(await run()); }
+    try { record(await run()); return true; }
     catch (error) {
       // Racing the chain (a deadline not yet reached on the ER clock, a stage that already moved)
       // is expected; anything else is a real failure.
       if (!(error instanceof ProgramError) || !/^(InvalidStage|TooEarly|InvalidPhase|Unauthorized) /.test(error.message)) throw error;
       console.log(`${label}: ${error.message}, retrying`);
       await pause(500);
+      return false;
     }
   };
   while (!settle) {
@@ -167,7 +169,8 @@ async function execute() {
       break;
     }
     invariant(table.phase === 'playing', `Unexpected phase ${table.phase}.`);
-    if (table.lastCard && table.vrfNonce !== lastCardNonce) { events.cards.push(table.lastCard); lastCardNonce = table.vrfNonce; }
+    // A card belongs to the callback that answered `vrfNonce`; count it once, after that callback.
+    if (table.stage !== 'rolling' && table.lastCard && table.vrfNonce !== lastCardNonce) { events.cards.push(table.lastCard); lastCardNonce = table.vrfNonce; }
     if (table.stage === 'ordering' || table.stage === 'rolling') {
       if (now() > table.vrfRequestedAt + board.rules.deadlinesSec.vrfRetry + 1) {
         await attempt('vrf retry', () => table.stage === 'ordering' ? client.startGame(address, players[0]) : client.roll(address, actor));
@@ -185,15 +188,16 @@ async function execute() {
       if (me.cash < 0) {
         const sale = table.board.map((lot, space) => ({ lot, space })).filter(item => item.lot.owner === seat)
           .sort((a, b) => Number(a.lot.buildings > 0) - Number(b.lot.buildings > 0) || (board.spaces[a.space].price ?? 0) - (board.spaces[b.space].price ?? 0))[0];
-        if (sale) { await attempt('sell', () => client.sell(address, actor, sale.space)); events.sales++; continue; }
+        if (sale) { if (await attempt('sell', () => client.sell(address, actor, sale.space))) events.sales++; continue; }
       }
       const build = board.spaces.filter(space => canBuild(table, seat, space.index) && me.cash - (space.buildingCost ?? 0) >= 150)
         .sort((a, b) => table.board[a.index].buildings - table.board[b.index].buildings || (b.rent ?? 0) - (a.rent ?? 0))[0];
-      if (build) { await attempt('build', () => client.build(address, actor, build.index)); events.builds++; continue; }
-      if (me.jailTurns > 0 && me.cash >= 500) { await attempt('bail', () => client.payBail(address, actor)); events.bails++; continue; }
-      if (me.jailTurns > 0) events.jailTurnsServed++;
-      await attempt('roll', () => client.roll(address, actor));
-      turns++;
+      if (build) { if (await attempt('build', () => client.build(address, actor, build.index))) events.builds++; continue; }
+      if (me.jailTurns > 0 && me.cash >= 500) { if (await attempt('bail', () => client.payBail(address, actor))) events.bails++; continue; }
+      if (await attempt('roll', () => client.roll(address, actor))) {
+        if (me.jailTurns > 0) events.jailTurnsServed++;
+        turns++;
+      }
       continue;
     }
     if (table.stage === 'buydecision') {
