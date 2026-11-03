@@ -1,0 +1,9 @@
+[toolchain]
+anchor_version = "1.2.0"
+
+[programs.devnet]
+bankroll_spike = "BNykdw1BfGo9qDfMQdTCjVhJF5AhncTCLkYNYLm5GPBC"
+
+[provider]
+cluster = "devnet"
+wallet = "~/.config/solana/id.json"

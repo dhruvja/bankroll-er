@@ -1,0 +1,21 @@
+{
+  "name": "bankroll-spikes",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "spike": "node --import tsx"
+  },
+  "dependencies": {
+    "@magicblock-labs/ephemeral-rollups-sdk": "0.17.2",
+    "@solana/spl-token": "0.4.15",
+    "@solana/web3.js": "1.99.0",
+    "bs58": "6.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.19",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
+  }
+}

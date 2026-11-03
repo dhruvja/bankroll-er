@@ -1,0 +1,39 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+*.tsbuildinfo
+.vite/
+
+# Rust / Anchor
+target/
+.anchor/
+test-ledger/
+**/*.rs.bk
+
+# Solana keypairs — program, upgrade buffer and wallet keys never leave this machine
+*-keypair.json
+*keypair*.json
+id.json
+
+# Environment — only the documented template is tracked
+.env
+.env.*
+!.env.example
+
+# Logs and coverage
+*.log
+npm-debug.log*
+coverage/
+
+# Editors and OS
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Throwaway spike secrets and receipts
+spikes/.keys/
+spikes/receipts/

@@ -1,0 +1,29 @@
+[package]
+name = "bankroll-spike"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "bankroll_spike"
+
+[features]
+default = []
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+cpi = ["no-entrypoint"]
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build", "anchor-spl/token_2022"]
+anchor-debug = ["anchor-lang/anchor-debug", "ephemeral-rollups-sdk/anchor-debug"]
+custom-heap = []
+custom-panic = []
+
+[dependencies]
+anchor-lang = { version = "=1.2.0" }
+anchor-spl = { version = "=1.2.0", default-features = false, features = ["token", "associated_token"] }
+ephemeral-rollups-sdk = { version = "=0.17.2", features = ["anchor"] }
+ephemeral-vrf-sdk = { version = "=0.17.2", features = ["anchor"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

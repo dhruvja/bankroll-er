@@ -1,0 +1,17 @@
+import { Connection, Keypair, Transaction } from '@solana/web3.js';
+import { createTransferInstruction, getAssociatedTokenAddressSync } from '@solana/spl-token';
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { resolve } from 'node:path';
+import { mintKey } from '../shared/client';
+const load = (path: string) => Keypair.fromSecretKey(Uint8Array.from(JSON.parse(readFileSync(path, 'utf8')) as number[]));
+const admin = load(resolve(homedir(), '.config/solana/id.json')), fresh = load(resolve(import.meta.dirname, '../.keys/fresh.json'));
+const base = new Connection('https://rpc.magicblock.app/devnet', 'confirmed');
+const source = getAssociatedTokenAddressSync(mintKey, fresh.publicKey);
+const amount = BigInt((await base.getTokenAccountBalance(source)).value.amount);
+const latest = await base.getLatestBlockhash('confirmed');
+const tx = new Transaction({ feePayer: admin.publicKey, ...latest }).add(createTransferInstruction(source, getAssociatedTokenAddressSync(mintKey, admin.publicKey), fresh.publicKey, amount));
+tx.sign(admin, fresh);
+const signature = await base.sendRawTransaction(tx.serialize());
+await base.confirmTransaction({ signature, ...latest }, 'confirmed');
+console.log(JSON.stringify({ returned: amount.toString(), signature }));
