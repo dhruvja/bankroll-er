@@ -929,8 +929,11 @@
       "name": "refund_player",
       "docs": [
         "Returns one seat's money from a Refunding table: the full entry with no fee, or the ranked",
-        "payout when the game had finished. A zero refund only marks the seat, so a seat whose",
-        "token accounts are gone cannot keep the table from returning to Free."
+        "payout when the game had finished. Anyone may send it; the money only ever goes to the",
+        "seat's own canonical accounts. If those are gone, the share stays until the refund grace",
+        "(`stage_deadline`) ends and then goes to the treasury, so a closed account cannot keep the",
+        "table out of the pool. The refund that frees the table sweeps what custody still holds (a",
+        "finished game's fee, stray deposits) to the treasury, so a Free table holds nothing."
       ],
       "discriminator": [
         251,
@@ -979,15 +982,22 @@
         {
           "name": "player_token",
           "docs": [
-            "refund is nonzero, so a closed account cannot block a zero refund."
-          ],
-          "writable": true
+            "`mut`: clients pass it writable when it is live and read-only when it is gone (the ER",
+            "rejects writable accounts it does not hold), and a transfer to it needs it writable."
+          ]
         },
         {
           "name": "table_eata"
         },
         {
-          "name": "player_eata"
+          "name": "player_custody_record"
+        },
+        {
+          "name": "treasury_token",
+          "writable": true
+        },
+        {
+          "name": "treasury_eata"
         },
         {
           "name": "token_program",
@@ -1144,9 +1154,11 @@
       "name": "settle",
       "docs": [
         "Pays every ranked share from table custody in one transaction, sweeps the fee, dust and",
-        "any stray deposit to the treasury, requires custody to end at zero and frees the table.",
-        "`remaining_accounts` holds (canonical ATA, eATA) for every seat, in seat order; only paid",
-        "seats' accounts are read, so a seat with nothing to receive cannot block settlement."
+        "any stray deposit to the treasury and frees the table. `remaining_accounts` holds (canonical",
+        "ATA, delegation record of its eATA) for every seat, in seat order; only paid seats' accounts",
+        "are read, so a seat with nothing to receive cannot block settlement. A paid seat whose",
+        "accounts are gone or no longer delegated here cannot block it either: its share stays in",
+        "custody and the table waits in Refunding for that seat alone."
       ],
       "discriminator": [
         175,
@@ -1292,6 +1304,74 @@
         }
       ],
       "args": []
+    },
+    {
+      "name": "withdraw_fees",
+      "docs": [
+        "ADMIN moves accrued fees from the treasury custody to its own canonical account on the ER,",
+        "capped at the treasury balance, then withdraws them through the Payments API."
+      ],
+      "discriminator": [
+        198,
+        212,
+        171,
+        109,
+        144,
+        215,
+        174,
+        89
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "signer": true,
+          "address": "653bMLonrEbTNbSM9g1vH8PJATH1uh6wYNr9SYEJSzsY"
+        },
+        {
+          "name": "treasury",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  114,
+                  101,
+                  97,
+                  115,
+                  117,
+                  114,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "treasury_token",
+          "writable": true
+        },
+        {
+          "name": "treasury_eata"
+        },
+        {
+          "name": "admin_token",
+          "writable": true
+        },
+        {
+          "name": "admin_eata"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
     }
   ],
   "accounts": [
@@ -1434,6 +1514,21 @@
       "code": 6024,
       "name": "OfferChanged",
       "msg": "That seat has no such offer; it may have changed"
+    },
+    {
+      "code": 6025,
+      "name": "IdleDeadlinePassed",
+      "msg": "The idle deadline has passed; the game can only end by ranking"
+    },
+    {
+      "code": 6026,
+      "name": "InvalidAmount",
+      "msg": "Amount must be positive and at most the treasury balance"
+    },
+    {
+      "code": 6027,
+      "name": "RecipientMissing",
+      "msg": "The seat's token accounts are gone; its share goes to the treasury after the refund grace"
     }
   ],
   "types": [
@@ -1473,6 +1568,9 @@
           },
           {
             "name": "refunded",
+            "docs": [
+              "In Refunding, whether this seat's money has left custody (or it had none to receive)."
+            ],
             "type": "bool"
           },
           {
@@ -1616,6 +1714,9 @@
           },
           {
             "name": "stage_deadline",
+            "docs": [
+              "The current stage's deadline while Playing; in Refunding, when the refund grace ends."
+            ],
             "type": "i64"
           },
           {

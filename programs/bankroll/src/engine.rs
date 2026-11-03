@@ -161,14 +161,33 @@ impl Table {
             caller == self.host || now >= self.lobby_deadline,
             GameError::Unauthorized
         );
-        self.phase = TablePhase::Refunding;
+        self.begin_refunds(now);
         Ok(())
     }
 
-    /// Marks one seat refunded and returns its wallet and amount; the last refund frees the table.
-    /// A game that never finished returns the full entry. A finished game whose settle kept
-    /// failing returns the ranked payout recorded at the emergency, so blocking settle gains
-    /// nothing; its fee stays in custody and the table's next settle sweeps it to the treasury.
+    /// Refunding starts: a seat whose token accounts are gone can no longer hold the table once
+    /// `stage_deadline` passes, because its share may then go to the treasury instead.
+    fn begin_refunds(&mut self, now: i64) {
+        self.phase = TablePhase::Refunding;
+        self.stage = Stage::Idle;
+        self.stage_deadline = now + REFUND_GRACE_SECONDS;
+    }
+
+    /// No player action is accepted once the idle deadline has passed: the game then ends only by
+    /// ranking through `force_timeout`, so the first player back cannot revive it and strike out
+    /// the absent seats.
+    fn require_live(&self, now: i64) -> Result<()> {
+        require!(
+            now < self.last_action_at + IDLE_SECONDS,
+            GameError::IdleDeadlinePassed
+        );
+        Ok(())
+    }
+
+    /// Marks one seat refunded and returns its wallet and amount; the last refund frees the table
+    /// (and `refund_player` then sweeps what custody still holds, the fee of a finished game, to
+    /// the treasury). A game that never finished returns the full entry. A finished game returns
+    /// the ranked payout recorded by `settle` or the emergency, so blocking settle gains nothing.
     pub fn refund(&mut self, index: usize) -> Result<(Pubkey, u64)> {
         require!(self.phase == TablePhase::Refunding, GameError::InvalidPhase);
         require!(index < self.count(), GameError::InvalidAccount);
@@ -191,9 +210,11 @@ impl Table {
                 require!(caller == self.host, GameError::Unauthorized);
                 require!(now < self.lobby_deadline, GameError::LobbyClosed);
                 require!(self.player_count >= 2, GameError::NotEnoughPlayers);
+                self.last_action_at = now;
             }
             (TablePhase::Playing, Stage::Ordering) => {
                 require!(self.seat_of(&caller).is_some(), GameError::Unauthorized);
+                self.require_live(now)?;
                 require!(
                     now >= self.vrf_requested_at + VRF_RETRY_SECONDS,
                     GameError::TooEarly
@@ -204,7 +225,6 @@ impl Table {
         self.request_vrf(VrfPurpose::Order, now)?;
         self.phase = TablePhase::Playing;
         self.stage = Stage::Ordering;
-        self.last_action_at = now;
         Ok(())
     }
 
@@ -215,6 +235,7 @@ impl Table {
     pub fn roll(&mut self, caller: Pubkey, now: i64) -> Result<bool> {
         require!(self.phase == TablePhase::Playing, GameError::InvalidPhase);
         let seat = self.seat_of(&caller).ok_or(GameError::Unauthorized)?;
+        self.require_live(now)?;
         match self.stage {
             Stage::PreRoll => {
                 require!(seat == self.current_seat(), GameError::Unauthorized);
@@ -224,6 +245,7 @@ impl Table {
                     self.advance_turn(now);
                     return Ok(false);
                 }
+                self.last_action_at = now;
             }
             Stage::Rolling => {
                 require!(self.is_active(seat), GameError::Unauthorized);
@@ -238,7 +260,6 @@ impl Table {
         }
         self.request_vrf(VrfPurpose::Roll, now)?;
         self.stage = Stage::Rolling;
-        self.last_action_at = now;
         Ok(true)
     }
 
@@ -409,7 +430,7 @@ impl Table {
     }
 
     pub fn buy(&mut self, caller: Pubkey, now: i64) -> Result<()> {
-        let seat = self.acting_seat(caller, &[Stage::BuyDecision])?;
+        let seat = self.acting_seat(caller, &[Stage::BuyDecision], now)?;
         let position = self.seats[seat].position as usize;
         let price = BOARD[position].price;
         require!(
@@ -428,7 +449,11 @@ impl Table {
 
     /// Declines a buy, or skips or cancels an Auction trade.
     pub fn pass(&mut self, caller: Pubkey, now: i64) -> Result<()> {
-        self.acting_seat(caller, &[Stage::BuyDecision, Stage::TradeOpen, Stage::TradeOffers])?;
+        self.acting_seat(
+            caller,
+            &[Stage::BuyDecision, Stage::TradeOpen, Stage::TradeOffers],
+            now,
+        )?;
         self.trade = Trade::default();
         self.last_action_at = now;
         self.finish_roll(now);
@@ -438,7 +463,7 @@ impl Table {
 
     /// Adds one building to a city of a full group the current seat owns, in its PreRoll.
     pub fn build(&mut self, caller: Pubkey, space: u8, now: i64) -> Result<()> {
-        let seat = self.acting_seat(caller, &[Stage::PreRoll])?;
+        let seat = self.acting_seat(caller, &[Stage::PreRoll], now)?;
         let space = space as usize;
         require!(space < SPACES, GameError::NotYourProperty);
         let spec = BOARD[space];
@@ -466,7 +491,7 @@ impl Table {
     /// Sells a property with its buildings for 80% of their price, in the current seat's PreRoll
     /// or BuyDecision. A sale that bankrupts the seller ends its turn.
     pub fn sell(&mut self, caller: Pubkey, space: u8, now: i64) -> Result<()> {
-        let seat = self.acting_seat(caller, &[Stage::PreRoll, Stage::BuyDecision])?;
+        let seat = self.acting_seat(caller, &[Stage::PreRoll, Stage::BuyDecision], now)?;
         let space = space as usize;
         require!(
             space < SPACES && self.board[space].owner as usize == seat,
@@ -487,7 +512,7 @@ impl Table {
 
     /// A jailed seat pays $150 in its PreRoll and is released; the turn ends without moving.
     pub fn pay_bail(&mut self, caller: Pubkey, now: i64) -> Result<()> {
-        let seat = self.acting_seat(caller, &[Stage::PreRoll])?;
+        let seat = self.acting_seat(caller, &[Stage::PreRoll], now)?;
         require!(self.seats[seat].jail_turns > 0, GameError::NotJailed);
         require!(self.seats[seat].cash >= BAIL, GameError::InsufficientCash);
         self.seats[seat].cash -= BAIL;
@@ -516,7 +541,7 @@ impl Table {
 
     /// The lander offers one unbuilt property; the offer window opens for the other seats.
     pub fn open_trade(&mut self, caller: Pubkey, space: u8, now: i64) -> Result<()> {
-        let seat = self.acting_seat(caller, &[Stage::TradeOpen])?;
+        let seat = self.acting_seat(caller, &[Stage::TradeOpen], now)?;
         require!(self.tradeable(seat, space as usize), GameError::CannotTrade);
         let deadline = now + TRADE_OFFER_SECONDS;
         self.trade = Trade { space, offers: [NO_OFFER; MAX_SEATS], deadline };
@@ -535,6 +560,7 @@ impl Table {
         );
         require!(now < self.trade.deadline, GameError::OffersClosed);
         let seat = self.seat_of(&caller).ok_or(GameError::Unauthorized)?;
+        self.require_live(now)?;
         require!(
             seat != self.current_seat() && self.is_active(seat),
             GameError::Unauthorized
@@ -546,10 +572,10 @@ impl Table {
     }
 
     /// The lander accepts `seat`'s offer, naming the offered `space` so an offer replaced in the
-    /// meantime cannot be accepted by mistake. Both sides get the trade bonus, then the end
-    /// conditions run.
+    /// meantime cannot be accepted by mistake. Both sides get the trade bonus, then the
+    /// bankruptcy check and the end conditions run.
     pub fn accept_trade(&mut self, caller: Pubkey, seat: u8, space: u8, now: i64) -> Result<()> {
-        let lander = self.acting_seat(caller, &[Stage::TradeOffers])?;
+        let lander = self.acting_seat(caller, &[Stage::TradeOffers], now)?;
         let seat = seat as usize;
         require!(
             seat < MAX_SEATS && space != NO_OFFER && self.trade.offers[seat] == space,
@@ -567,6 +593,9 @@ impl Table {
         self.board[space as usize].owner = lander as u8;
         self.seats[lander].cash += TRADE_BONUS;
         self.seats[seat].cash += TRADE_BONUS;
+        // The swap can lower either side's net worth; a seat in debt can end at or below zero.
+        self.eliminate_if_bankrupt(lander);
+        self.eliminate_if_bankrupt(seat);
         self.trade = Trade::default();
         self.last_action_at = now;
         self.finish_roll(now);
@@ -574,14 +603,16 @@ impl Table {
         Ok(())
     }
 
-    /// The current seat, when `caller` holds it and the turn is in one of `stages`.
-    fn acting_seat(&self, caller: Pubkey, stages: &[Stage]) -> Result<usize> {
+    /// The current seat, when `caller` holds it, the turn is in one of `stages` and the game is
+    /// not past its idle deadline.
+    fn acting_seat(&self, caller: Pubkey, stages: &[Stage], now: i64) -> Result<usize> {
         require!(
             self.phase == TablePhase::Playing && stages.contains(&self.stage),
             GameError::InvalidStage
         );
         let seat = self.current_seat();
         require!(self.seats[seat].wallet == caller, GameError::Unauthorized);
+        self.require_live(now)?;
         Ok(seat)
     }
 
@@ -592,17 +623,18 @@ impl Table {
         match self.phase {
             // Settle keeps failing: each seat pulls its ranked payout through refund_player instead.
             TablePhase::Finished if now >= idle_at.max(self.ended_at) + EMERGENCY_SECONDS => {
+                // A seat with nothing to receive is done already.
                 let payouts = self.payouts()?;
                 for (seat, payout) in self.seats.iter_mut().zip(payouts) {
                     seat.payout = payout;
+                    seat.refunded = payout == 0;
                 }
-                self.phase = TablePhase::Refunding;
+                self.begin_refunds(now);
             }
             TablePhase::Playing if now >= idle_at => {
                 if self.stage == Stage::Ordering {
                     // No turn order means no cash and no ranking: return every entry instead.
-                    self.phase = TablePhase::Refunding;
-                    self.stage = Stage::Idle;
+                    self.begin_refunds(now);
                     self.vrf_purpose = VrfPurpose::None;
                 } else {
                     self.finish(now);
@@ -680,11 +712,24 @@ impl Table {
         Ok(payouts)
     }
 
-    pub fn record_settlement(&mut self, payouts: [u64; MAX_SEATS]) {
-        for (seat, payout) in self.seats.iter_mut().zip(payouts) {
+    /// Records what `settle` paid. A seat in `unpaid` had a share but no live token accounts, so
+    /// its share stayed in custody: the table then waits in Refunding until that seat pulls it
+    /// with `refund_player`, or the grace period passes and it goes to the treasury.
+    pub fn record_settlement(
+        &mut self,
+        payouts: [u64; MAX_SEATS],
+        unpaid: [bool; MAX_SEATS],
+        now: i64,
+    ) {
+        for ((seat, payout), unpaid) in self.seats.iter_mut().zip(payouts).zip(unpaid) {
             seat.payout = payout;
+            seat.refunded = !unpaid;
         }
-        self.phase = TablePhase::Free;
+        if unpaid.contains(&true) {
+            self.begin_refunds(now);
+        } else {
+            self.phase = TablePhase::Free;
+        }
     }
 
     fn begin_turn(&mut self, now: i64) {

@@ -8,8 +8,8 @@ use anchor_lang::{
     ToAccountMetas,
 };
 use bankroll::{
-    custody_address, treasury_address, Stage, Table, TablePhase, VrfPurpose, NO_OWNER,
-    TABLE_SEED, TABLE_SPACE, USDC_MINT,
+    custody_address, treasury_address, Stage, Table, TablePhase, VrfPurpose, ADMIN, NO_OWNER,
+    REFUND_GRACE_SECONDS, TABLE_SEED, TABLE_SPACE, USDC_MINT,
 };
 use litesvm::{
     types::{FailedTransactionMetadata, TransactionMetadata},
@@ -27,6 +27,7 @@ use spl_token_interface::state::{Account as TokenAccount, AccountState};
 use std::path::PathBuf;
 
 const USDC: u64 = 1_000_000;
+const ESPL: Address = ephemeral_rollups_sdk::consts::ESPL_TOKEN_PROGRAM_ID;
 const T0: i64 = 10_000;
 
 fn ix(accounts: impl ToAccountMetas, data: impl InstructionData) -> Instruction {
@@ -47,18 +48,25 @@ fn set_data(svm: &mut LiteSVM, address: Address, owner: Address, data: Vec<u8>) 
     svm.set_account(address, Account { lamports, data, owner, executable: false, rent_epoch: 0 })
         .unwrap();
 }
-fn set_public_record(svm: &mut LiteSVM, table: Address) {
+/// A live delegation record of `delegated` (owned by `owner`) to the public validator.
+fn set_public_record(svm: &mut LiteSVM, delegated: Address, owner: Address) {
     let mut data = 100u64.to_le_bytes().to_vec();
     data.extend_from_slice(bankroll::PUBLIC_VALIDATOR.as_ref());
-    data.extend_from_slice(bankroll::ID.as_ref());
+    data.extend_from_slice(owner.as_ref());
     data.extend_from_slice(&[0; 24]);
-    set_data(svm, record(table), ephemeral_rollups_sdk::id(), data);
+    set_data(svm, record(delegated), ephemeral_rollups_sdk::id(), data);
 }
+/// The wallet's eATA as the ER shows it, plus its delegation record (what projects the ATA here).
 fn set_custody(svm: &mut LiteSVM, owner: Address) {
     let mut data = owner.to_bytes().to_vec();
     data.extend_from_slice(USDC_MINT.as_ref());
     data.extend_from_slice(&[0; 16]);
-    set_data(svm, custody_address(owner), ephemeral_rollups_sdk::consts::ESPL_TOKEN_PROGRAM_ID, data);
+    set_data(svm, custody_address(owner), ESPL, data);
+    set_public_record(svm, custody_address(owner), ESPL);
+}
+/// The delegation record of the wallet's eATA, which `payable` reads.
+fn custody_record(owner: Address) -> Address {
+    record(custody_address(owner))
 }
 fn set_token(svm: &mut LiteSVM, owner: Address, mint: Address, amount: u64, frozen: bool) {
     let token = TokenAccount {
@@ -103,7 +111,7 @@ impl Harness {
         let treasury = treasury_address();
         let mut h = Self { svm, payer, players: (0..4).map(|_| Keypair::new()).collect(), table, treasury };
         h.write(&Table { index: 7, bump, ..Table::default() });
-        set_public_record(&mut h.svm, table);
+        set_public_record(&mut h.svm, table, bankroll::ID);
         set_token(&mut h.svm, table, USDC_MINT, 0, false);
         set_token(&mut h.svm, treasury, USDC_MINT, 0, false);
         for player in &h.players {
@@ -215,11 +223,18 @@ impl Harness {
         let table = self.read();
         for seat in &table.seats[..table.player_count as usize] {
             instruction.accounts.push(AccountMeta::new(ata(seat.wallet), false));
-            instruction.accounts.push(AccountMeta::new_readonly(custody_address(seat.wallet), false));
+            instruction.accounts.push(AccountMeta::new_readonly(custody_record(seat.wallet), false));
         }
         instruction
     }
+    /// A refund with the seat's ATA writable, as clients send it when the account is live.
     fn refund_ix(&self, seat: u8) -> Instruction {
+        let mut instruction = self.closed_refund_ix(seat);
+        instruction.accounts[3].is_writable = true;
+        instruction
+    }
+    /// A refund with the seat's ATA read-only, as clients send it when the account is gone.
+    fn closed_refund_ix(&self, seat: u8) -> Instruction {
         let wallet = self.read().seats[seat as usize].wallet;
         ix(
             bankroll::accounts::RefundPlayer {
@@ -228,16 +243,41 @@ impl Harness {
                 table_token: ata(self.table),
                 player_token: ata(wallet),
                 table_eata: custody_address(self.table),
-                player_eata: custody_address(wallet),
+                player_custody_record: custody_record(wallet),
+                treasury_token: ata(self.treasury),
+                treasury_eata: custody_address(self.treasury),
                 token_program: spl_token_interface::ID,
             },
             bankroll::instruction::RefundPlayer { seat },
         )
     }
+    /// `withdraw_fees` signed by `admin` (signature verification is off, so ADMIN needs no key).
+    fn withdraw_fees(&mut self, admin: Address, admin_token: Address, amount: u64) -> Result<TransactionMetadata, FailedTransactionMetadata> {
+        let instruction = ix(
+            bankroll::accounts::WithdrawFees {
+                admin,
+                treasury: self.treasury,
+                treasury_token: ata(self.treasury),
+                treasury_eata: custody_address(self.treasury),
+                admin_token,
+                admin_eata: custody_address(ADMIN),
+                token_program: spl_token_interface::ID,
+            },
+            bankroll::instruction::WithdrawFees { amount },
+        );
+        self.unsigned(&[instruction])
+    }
+    /// Sends with every non-payer signer flag set but no signatures (sigverify is off).
+    fn unsigned(&mut self, instructions: &[Instruction]) -> Result<TransactionMetadata, FailedTransactionMetadata> {
+        self.svm.expire_blockhash();
+        let mut tx = Transaction::new_with_payer(instructions, Some(&self.payer.pubkey()));
+        tx.message.recent_blockhash = self.svm.latest_blockhash();
+        self.svm.send_transaction(tx)
+    }
     fn snapshot(&self) -> Vec<Vec<u8>> {
         let mut keys = vec![self.table, ata(self.table), ata(self.treasury)];
         keys.extend(self.players.iter().map(|player| ata(player.pubkey())));
-        keys.iter().map(|key| self.svm.get_account(key).unwrap().data).collect()
+        keys.iter().map(|key| self.svm.get_account(key).unwrap_or_default().data).collect()
     }
     /// Opens a 3-player lobby with real entry transfers, then fixtures a started game with turn
     /// order equal to seat order (the start VRF request needs the live oracle).
@@ -386,6 +426,7 @@ fn substituted_custody_recipient_treasury_or_mint_cannot_take_funds() {
         let mut instruction = base.clone();
         instruction.accounts[index].pubkey = match index {
             2 | 4 | 7 => ata(attacker),
+            8 => custody_record(attacker),
             _ => custody_address(attacker),
         };
         cases.push(instruction);
@@ -411,10 +452,19 @@ fn substituted_custody_recipient_treasury_or_mint_cannot_take_funds() {
     set_token(&mut h.svm, first, USDC_MINT, 0, false);
     let mut refund = h.refund_ix(0);
     refund.accounts[3].pubkey = ata(attacker);
-    refund.accounts[5].pubkey = custody_address(attacker);
-    let before = h.snapshot();
-    assert!(h.send(&[], refund).is_err(), "refund to another wallet");
-    assert_eq!(before, h.snapshot());
+    refund.accounts[5].pubkey = custody_record(attacker);
+    let mut treasury = h.refund_ix(0);
+    treasury.accounts[6].pubkey = ata(attacker);
+    treasury.accounts[7].pubkey = custody_address(attacker);
+    // Even after the refund grace, another wallet's accounts never count as the seat's.
+    for now in [T0, T0 + 30 + REFUND_GRACE_SECONDS] {
+        h.clock(now);
+        for instruction in [refund.clone(), treasury.clone()] {
+            let before = h.snapshot();
+            assert!(h.send(&[], instruction).is_err(), "refund to another wallet");
+            assert_eq!(before, h.snapshot());
+        }
+    }
 }
 
 #[test]
@@ -577,18 +627,21 @@ fn emergency_refund_pays_ranked_shares_when_settle_keeps_failing() {
     h.action(1, bankroll::instruction::ForceTimeout {}).unwrap();
     assert_eq!(h.read().phase, TablePhase::Refunding);
     assert!(h.send(&[], settle).is_err(), "no settle after the emergency switch");
-    // The zero-payout seat's token accounts are gone; its refund still marks it so the table frees.
+    // The zero-payout seat is done at the switch, so its closed accounts never matter.
     let loser = h.wallet(2);
     close(&mut h.svm, ata(loser));
-    close(&mut h.svm, custody_address(loser));
-    for (seat, expected) in [(0u8, 2_010_000), (1, 900_000), (2, 0)] {
+    close(&mut h.svm, custody_record(loser));
+    assert!(h.read().seats[2].refunded);
+    assert!(h.send(&[], h.closed_refund_ix(2)).is_err(), "nothing left to refund");
+    set_token(&mut h.svm, h.treasury, USDC_MINT, 0, false);
+    for (seat, expected) in [(0u8, 2_010_000), (1, 900_000)] {
         let refund = h.refund_ix(seat);
         h.send(&[], refund.clone()).unwrap();
         assert!(h.send(&[], refund).is_err(), "double refund");
         assert_eq!(balance(&h.svm, h.wallet(seat as usize)), expected, "ranked share, never the entry");
     }
-    assert_eq!(balance(&h.svm, h.table), 90_000, "the fee waits in custody for the next settle");
-    assert_eq!(balance(&h.svm, h.treasury), 0);
+    assert_eq!(balance(&h.svm, h.table), 0, "the last refund sweeps the fee out of custody");
+    assert_eq!(balance(&h.svm, h.treasury), 90_000);
     assert_eq!(h.read().phase, TablePhase::Free);
 }
 
@@ -599,7 +652,7 @@ fn a_losing_seat_cannot_block_settle_by_closing_its_token_accounts() {
     h.finish(&[3500, 1000]);
     let loser = h.wallet(1);
     close(&mut h.svm, ata(loser));
-    close(&mut h.svm, custody_address(loser));
+    close(&mut h.svm, custody_record(loser));
     let settle = h.settle_ix();
     h.send(&[], settle).unwrap();
     assert_eq!(balance(&h.svm, h.wallet(0)), 1_940_000);
@@ -776,4 +829,123 @@ fn an_accepted_trade_swaps_with_the_chosen_seat_and_only_the_lander_or_active_se
     assert_eq!((table.board[14].owner, table.board[17].owner, table.board[1].owner), (2, 0, 1), "swapped with seat 2 only");
     assert_eq!(table.seats.map(|seat| seat.cash), [cash[0] + 100, cash[1], cash[2] + 100, cash[3]]);
     assert_eq!((table.stage, table.turn, table.trade), (Stage::PreRoll, 1, bankroll::Trade::default()));
+}
+
+#[test]
+fn withdraw_fees_is_admin_only_capped_at_the_treasury_and_er_only() {
+    let mut h = Harness::new();
+    set_token(&mut h.svm, h.treasury, USDC_MINT, 500_000, false);
+    set_token(&mut h.svm, ADMIN, USDC_MINT, 0, false);
+    let stranger = h.wallet(1);
+    let before = h.snapshot();
+    assert!(h.withdraw_fees(stranger, ata(ADMIN), 100_000).is_err(), "non-admin signer");
+    assert!(h.withdraw_fees(stranger, ata(stranger), 100_000).is_err(), "non-admin to its own account");
+    assert!(h.withdraw_fees(ADMIN, ata(stranger), 100_000).is_err(), "admin to another wallet");
+    assert!(h.withdraw_fees(ADMIN, ata(ADMIN), 0).is_err(), "zero");
+    assert!(h.withdraw_fees(ADMIN, ata(ADMIN), 500_001).is_err(), "above the treasury balance");
+    assert_eq!(before, h.snapshot());
+    // On base the treasury custody is DLP-owned, so the ER-only guard rejects it.
+    let mut eata = h.svm.get_account(&custody_address(h.treasury)).unwrap();
+    let er_owner = eata.owner;
+    eata.owner = ephemeral_rollups_sdk::id();
+    h.svm.set_account(custody_address(h.treasury), eata.clone()).unwrap();
+    assert!(h.withdraw_fees(ADMIN, ata(ADMIN), 100_000).is_err(), "base clone");
+    eata.owner = er_owner;
+    h.svm.set_account(custody_address(h.treasury), eata).unwrap();
+
+    h.withdraw_fees(ADMIN, ata(ADMIN), 300_000).unwrap();
+    assert_eq!((balance(&h.svm, ADMIN), balance(&h.svm, h.treasury)), (300_000, 200_000));
+    h.withdraw_fees(ADMIN, ata(ADMIN), 200_000).unwrap();
+    assert_eq!((balance(&h.svm, ADMIN), balance(&h.svm, h.treasury)), (500_000, 0));
+    assert!(h.withdraw_fees(ADMIN, ata(ADMIN), 1).is_err(), "an empty treasury");
+}
+
+/// A Refunding seat whose token accounts are gone holds its share for the refund grace only;
+/// then anyone may send it to the treasury, and the table returns to the pool with custody 0.
+#[test]
+fn a_closed_refund_account_cannot_keep_the_table_out_of_the_pool() {
+    let mut h = Harness::new();
+    h.open(3, 3000);
+    h.join(1, 1).unwrap();
+    h.join(2, 1).unwrap();
+    h.action(0, bankroll::instruction::CancelOrExpire {}).unwrap();
+    assert_eq!(h.read().stage_deadline, T0 + REFUND_GRACE_SECONDS);
+    let gone = h.wallet(1);
+    close(&mut h.svm, ata(gone));
+    close(&mut h.svm, custody_record(gone));
+    let before = h.snapshot();
+    assert!(h.send(&[], h.closed_refund_ix(1)).is_err(), "the share waits for the grace");
+    // A live seat cannot be pushed to the treasury by passing its ATA read-only.
+    h.clock(T0 + REFUND_GRACE_SECONDS);
+    assert!(h.send(&[], h.closed_refund_ix(0)).is_err(), "a live account must receive its refund");
+    assert_eq!(before, h.snapshot());
+    h.clock(T0);
+    h.send(&[], h.refund_ix(0)).unwrap();
+    h.send(&[], h.refund_ix(2)).unwrap();
+    assert_eq!(h.read().phase, TablePhase::Refunding);
+    h.clock(T0 + REFUND_GRACE_SECONDS);
+    h.send(&[], h.closed_refund_ix(1)).unwrap();
+    assert_eq!((balance(&h.svm, h.wallet(0)), balance(&h.svm, h.wallet(2))), (USDC, USDC));
+    assert_eq!((balance(&h.svm, h.treasury), balance(&h.svm, h.table)), (USDC, 0));
+    assert_eq!(h.read().phase, TablePhase::Free);
+}
+
+/// A paid seat whose ATA is no longer delegated here cannot block the others: they are paid, the
+/// fee goes to the treasury, and the table waits in Refunding for that seat, which can still
+/// collect. The seat undelegated its ATA, so the ER still shows a Token-owned, unfrozen ATA that
+/// it will not write (passed read-only); only its eATA's delegation record is gone.
+#[test]
+fn settle_pays_the_live_seats_and_holds_an_undelegated_seats_share() {
+    let mut h = Harness::new();
+    h.playing(3, 3000);
+    h.finish(&[3500, 2000, 1000]);
+    let second = h.wallet(1);
+    close(&mut h.svm, custody_record(second));
+    let mut settle = h.settle_ix();
+    settle.accounts[9].is_writable = false;
+    h.clock(T0 + 5);
+    h.send(&[], settle).unwrap();
+    assert_eq!(balance(&h.svm, h.wallet(0)), 2_010_000);
+    assert_eq!((balance(&h.svm, h.treasury), balance(&h.svm, h.table)), (90_000, 900_000));
+    let table = h.read();
+    assert_eq!((table.phase, table.stage_deadline), (TablePhase::Refunding, T0 + 5 + REFUND_GRACE_SECONDS));
+    assert_eq!(table.seats[..3].iter().map(|seat| (seat.payout, seat.refunded)).collect::<Vec<_>>(),
+        [(2_010_000, true), (900_000, false), (0, true)]);
+    // The seat recreates its accounts and collects its ranked share before the grace ends.
+    set_token(&mut h.svm, second, USDC_MINT, 0, false);
+    h.send(&[], h.refund_ix(1)).unwrap();
+    assert_eq!((balance(&h.svm, second), balance(&h.svm, h.table)), (900_000, 0));
+    assert_eq!(h.read().phase, TablePhase::Free);
+}
+
+/// Everyone left a 3-player game. After the idle deadline the returning current seat cannot act,
+/// and one transaction from a fresh, unseated, zero-SOL wallet ends, ranks and settles the game.
+#[test]
+fn a_fresh_client_ends_ranks_and_settles_an_abandoned_game_in_one_transaction() {
+    let mut h = Harness::new();
+    h.playing(3, 7000);
+    let mut table = h.read();
+    table.seats[0].cash = 1_500;
+    table.seats[1].cash = 2_400;
+    table.seats[2].cash = 2_100;
+    h.write(&table);
+    let idle = table.last_action_at + 3600;
+    h.clock(idle - 1);
+    let before = h.snapshot();
+    h.clock(idle);
+    assert!(h.roll(0).is_err(), "the current seat cannot revive the game");
+    assert!(h.action(0, bankroll::instruction::Pass {}).is_err());
+    assert_eq!(before, h.snapshot());
+    let fresh = Keypair::new();
+    let timeout = ix(bankroll::accounts::TableAction { signer: fresh.pubkey(), table: h.table }, bankroll::instruction::ForceTimeout {});
+    let settle = h.settle_ix();
+    h.svm.expire_blockhash();
+    // The ER charges no fee; LiteSVM does, so the harness payer covers it.
+    let tx = Transaction::new_signed_with_payer(&[timeout, settle], Some(&h.payer.pubkey()), &[&h.payer, &fresh], h.svm.latest_blockhash());
+    h.svm.send_transaction(tx).unwrap();
+    let table = h.read();
+    assert_eq!(table.phase, TablePhase::Free);
+    assert!(table.seats[..3].iter().all(|seat| seat.strikes == 0 && seat.eliminated_at == 0), "nobody forfeited");
+    assert_eq!([balance(&h.svm, h.wallet(0)), balance(&h.svm, h.wallet(1)), balance(&h.svm, h.wallet(2))], [0, 2_010_000, 900_000]);
+    assert_eq!((balance(&h.svm, h.treasury), balance(&h.svm, h.table)), (90_000, 0));
 }

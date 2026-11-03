@@ -65,6 +65,7 @@ fn lobby_validates_config_nonce_capacity_and_refunds_free_the_table() {
     assert!(free.cancel_or_expire(w[1], T0 + LOBBY_SECONDS - 1).is_err());
     free.cancel_or_expire(w[1], T0 + LOBBY_SECONDS).unwrap();
     assert_eq!(free.phase, TablePhase::Refunding);
+    assert_eq!(free.stage_deadline, T0 + LOBBY_SECONDS + REFUND_GRACE_SECONDS, "the refund grace starts");
     assert_eq!(free.refund(1).unwrap(), (w[1], free.entry), "an unfinished game refunds the entry");
     assert!(free.refund(1).is_err());
     assert!(free.refund(2).is_err());
@@ -289,7 +290,19 @@ fn idle_deadline_ends_by_ranking_before_stage_timeouts_then_emergency_refund() {
     let ranked = table.payouts().unwrap();
     table.force_timeout(idle + EMERGENCY_SECONDS).unwrap();
     assert_eq!(table.phase, TablePhase::Refunding);
+    assert_eq!(
+        table.stage_deadline,
+        idle + EMERGENCY_SECONDS + REFUND_GRACE_SECONDS
+    );
     for seat in 0..3 {
+        if ranked[seat] == 0 {
+            assert!(
+                table.seats[seat].refunded,
+                "a seat with nothing to receive is done at the switch"
+            );
+            assert!(table.refund(seat).is_err());
+            continue;
+        }
         let (wallet, amount) = table.refund(seat).unwrap();
         assert_eq!((wallet, amount), (wallets()[seat], ranked[seat]), "a finished game refunds its ranked payout");
     }
@@ -311,6 +324,85 @@ fn idle_deadline_ends_by_ranking_before_stage_timeouts_then_emergency_refund() {
     unordered.start(wallets()[0], T0).unwrap();
     unordered.force_timeout(T0 + IDLE_SECONDS).unwrap();
     assert_eq!(unordered.phase, TablePhase::Refunding, "no turn order: refund instead of ranking");
+}
+
+/// Everyone left; the first player back is the current seat. Its own actions must not revive the
+/// game (which would let it strike out the absent seats); one `force_timeout` ends it by ranking.
+#[test]
+fn after_the_idle_deadline_no_player_action_revives_the_game_and_one_timeout_ranks_it() {
+    let w = wallets();
+    let mut table = playing(3, 7000);
+    for (seat, cash) in [2000, 2900, 2000].into_iter().enumerate() {
+        table.seats[seat].cash = cash;
+    }
+    table.board[1].owner = 2;
+    let idle = table.last_action_at + IDLE_SECONDS;
+    let before = table.clone();
+    assert!(
+        table.roll(w[0], idle).is_err(),
+        "the returning current seat cannot roll"
+    );
+    assert!(
+        table.pass(w[0], idle).is_err()
+            && table.build(w[0], 1, idle).is_err()
+            && table.sell(w[0], 1, idle).is_err()
+    );
+    assert!(
+        table.pay_bail(w[0], idle).is_err()
+            && table.buy(w[0], idle).is_err()
+            && table.open_trade(w[0], 1, idle).is_err()
+    );
+    assert_eq!(
+        table, before,
+        "rejected after the idle deadline, nothing changed"
+    );
+
+    // Spamming the timeout is idempotent: the first call ranks, the rest fail until the emergency.
+    table.force_timeout(idle).unwrap();
+    let ended = table.clone();
+    for later in [idle, idle + 1, idle + EMERGENCY_SECONDS - 1] {
+        assert!(table.force_timeout(later).is_err());
+        assert_eq!(table, ended);
+    }
+    assert_eq!(table.phase, TablePhase::Finished);
+    assert!(
+        table
+            .seats
+            .iter()
+            .all(|seat| seat.strikes == 0 && seat.eliminated_at == 0),
+        "no forfeits"
+    );
+    // Ranked by net worth: seat 1 has the most cash, seat 2 holds a property.
+    assert_eq!(table.payouts().unwrap(), [0, 2_010_000, 900_000, 0]);
+
+    // The same holds in Rolling (a re-request would bump the idle clock) and in Ordering.
+    let mut rolling = playing(2, 3000);
+    rolling.roll(w[0], T0).unwrap();
+    let idle = rolling.last_action_at + IDLE_SECONDS;
+    assert!(rolling.roll(w[0], idle).is_err() && rolling.roll(w[1], idle).is_err());
+    let mut ordering = lobby(2, 3000);
+    ordering.start(w[0], T0).unwrap();
+    assert!(ordering.start(w[1], T0 + IDLE_SECONDS).is_err());
+    let mut offers = auction(3, 7000, 6, 6, &[(1, 0), (2, 1)]);
+    offers.open_trade(w[0], 1, T0).unwrap();
+    assert!(offers.offer_trade(w[1], 2, T0 + IDLE_SECONDS).is_err());
+}
+
+/// Stage timeouts spammed at one instant strike once; every repeat is rejected without change.
+#[test]
+fn force_timeout_spam_is_idempotent() {
+    let mut table = playing(3, 7000);
+    let deadline = table.stage_deadline;
+    for _ in 0..20 {
+        assert!(table.force_timeout(deadline - 1).is_err());
+    }
+    table.force_timeout(deadline).unwrap();
+    let after = table.clone();
+    for _ in 0..20 {
+        assert!(table.force_timeout(deadline).is_err());
+        assert_eq!(table, after);
+    }
+    assert_eq!((table.seats[0].strikes, table.current_seat()), (1, 1));
 }
 
 #[test]
@@ -344,6 +436,57 @@ fn vrf_callbacks_need_the_pending_nonce_and_retries_bump_it() {
     assert_eq!(table.seats[0].position, 3, "the retry still moves the current seat");
 }
 
+/// A VRF outage cannot keep a game alive forever: re-requests are not player actions, so the idle
+/// deadline still runs from the last real action and then ends the game by ranking.
+#[test]
+fn vrf_re_requests_do_not_move_the_idle_deadline() {
+    let mut table = lobby(3, 7000);
+    table.start(wallets()[0], T0).unwrap();
+    table.start(wallets()[1], T0 + VRF_RETRY_SECONDS).unwrap();
+    assert_eq!(table.last_action_at, T0, "an order re-request is not an action");
+    table.consume_randomness([9; 32], table.vrf_nonce, T0 + 20).unwrap();
+    table.order = [0, 1, 2, 3];
+    table.turn = 0;
+    table.roll(wallets()[0], T0 + 30).unwrap();
+    let mut now = T0 + 30;
+    while now + VRF_RETRY_SECONDS < T0 + 30 + IDLE_SECONDS {
+        now += VRF_RETRY_SECONDS;
+        table.roll(wallets()[0], now).unwrap();
+    }
+    assert_eq!(table.last_action_at, T0 + 30);
+    assert!(table.roll(wallets()[0], T0 + 30 + IDLE_SECONDS).is_err(), "past idle, no retry");
+    table.force_timeout(T0 + 30 + IDLE_SECONDS).unwrap();
+    assert_eq!(table.phase, TablePhase::Finished);
+    assert!(table.seats.iter().all(|seat| seat.strikes == 0), "ended by ranking, nobody struck");
+}
+
+/// A paid seat whose token accounts were gone at settle keeps its share in custody: the table
+/// waits in Refunding for that seat alone, which then pulls its ranked share.
+#[test]
+fn settlement_with_an_unpaid_seat_waits_in_refunding_for_that_seat_only() {
+    let mut table = playing(3, 7000);
+    table
+        .force_timeout(table.last_action_at + IDLE_SECONDS)
+        .unwrap();
+    let payouts = table.payouts().unwrap();
+    let second = (0..3).find(|&seat| payouts[seat] == 900_000).unwrap();
+    let mut unpaid = [false; MAX_SEATS];
+    unpaid[second] = true;
+    table.record_settlement(payouts, unpaid, T0 + 50);
+    assert_eq!(
+        (table.phase, table.stage_deadline),
+        (TablePhase::Refunding, T0 + 50 + REFUND_GRACE_SECONDS)
+    );
+    for seat in (0..3).filter(|&seat| seat != second) {
+        assert!(
+            table.seats[seat].refunded && table.refund(seat).is_err(),
+            "paid or nothing owed"
+        );
+    }
+    assert_eq!(table.refund(second).unwrap(), (wallets()[second], 900_000));
+    assert_eq!(table.phase, TablePhase::Free);
+}
+
 #[test]
 fn open_resets_every_game_field_but_keeps_identity_and_nonces() {
     let mut table = playing(4, 5000);
@@ -352,7 +495,7 @@ fn open_resets_every_game_field_but_keeps_identity_and_nonces() {
     table.seats[3].strikes = 2;
     table.force_timeout(table.last_action_at + IDLE_SECONDS).unwrap();
     let payouts = table.payouts().unwrap();
-    table.record_settlement(payouts);
+    table.record_settlement(payouts, [false; MAX_SEATS], T0 + 9_000);
     assert_eq!(table.phase, TablePhase::Free);
     let (game_nonce, vrf_nonce) = (table.game_nonce, table.vrf_nonce);
     let host = Pubkey::new_unique();
@@ -944,6 +1087,35 @@ fn the_trade_bonus_can_reach_the_target_and_end_the_game() {
     assert_eq!((table.phase, table.stage, table.ended_at), (TablePhase::Finished, Stage::Idle, T0 + 4));
     assert_eq!(table.trade, Trade::default());
     assert_eq!(table.payouts().unwrap()[0], 2_010_000);
+}
+
+/// A swap can lower a seat's net worth: an offerer in debt that gives a dear property for a cheap
+/// one is bankrupt the moment its net worth reaches 0, like after any other change.
+#[test]
+fn a_trade_that_drops_net_worth_to_zero_or_below_bankrupts_that_seat() {
+    let w = wallets();
+    let mut table = auction(3, 7000, 10, 2, &[(1, 0), (23, 1)]);
+    table.seats[1].cash = -300;
+    assert_eq!(table.net_worth(1), 100);
+    table.open_trade(w[0], 1, T0 + 2).unwrap();
+    table.offer_trade(w[1], 23, T0 + 3).unwrap();
+    table.accept_trade(w[0], 1, 23, T0 + 4).unwrap();
+    assert_ne!(
+        table.seats[1].eliminated_at, 0,
+        "-300 + 100 cash and Athens ($60): net worth -140"
+    );
+    assert_eq!(
+        (
+            table.seats[1].cash,
+            table.board[1].owner,
+            table.board[23].owner
+        ),
+        (0, NO_OWNER, 0)
+    );
+    assert_eq!(
+        (table.phase, table.current_seat()),
+        (TablePhase::Playing, 2)
+    );
 }
 
 #[test]

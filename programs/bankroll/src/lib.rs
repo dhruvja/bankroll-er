@@ -93,34 +93,47 @@ pub mod bankroll {
     }
 
     /// Returns one seat's money from a Refunding table: the full entry with no fee, or the ranked
-    /// payout when the game had finished. A zero refund only marks the seat, so a seat whose
-    /// token accounts are gone cannot keep the table from returning to Free.
-    pub fn refund_player(ctx: Context<RefundPlayer>, seat: u8) -> Result<()> {
+    /// payout when the game had finished. Anyone may send it; the money only ever goes to the
+    /// seat's own canonical accounts. If those are gone, the share stays until the refund grace
+    /// (`stage_deadline`) ends and then goes to the treasury, so a closed account cannot keep the
+    /// table out of the pool. The refund that frees the table sweeps what custody still holds (a
+    /// finished game's fee, stray deposits) to the treasury, so a Free table holds nothing.
+    pub fn refund_player(mut ctx: Context<RefundPlayer>, seat: u8) -> Result<()> {
         require_public_er(&ctx.accounts.delegation_record)?;
+        let grace_over = Clock::get()?.unix_timestamp >= ctx.accounts.table.stage_deadline;
         let (wallet, amount) = ctx.accounts.table.refund(seat as usize)?;
-        if amount == 0 {
-            return Ok(());
+        let accounts = &mut ctx.accounts;
+        if amount > 0 {
+            let live = payable(wallet, &accounts.player_token, &accounts.player_custody_record)?;
+            let destination = if live {
+                accounts.player_token.to_account_info()
+            } else {
+                require!(grace_over, GameError::RecipientMissing);
+                accounts.treasury_token.to_account_info()
+            };
+            transfer_from_table(
+                &accounts.table,
+                &accounts.table_token,
+                destination,
+                &accounts.token_program,
+                amount,
+            )?;
         }
-        let player_token = ctx.accounts.player_token.to_account_info();
-        require_keys_eq!(*player_token.owner, Token::id(), GameError::InvalidAccount);
-        let destination = TokenAccount::try_deserialize(&mut &player_token.try_borrow_data()?[..])?;
-        require_keys_eq!(destination.mint, USDC_MINT, GameError::InvalidAccount);
-        require_keys_eq!(destination.owner, wallet, GameError::InvalidAccount);
-        require_keys_eq!(
-            player_token.key(),
-            get_associated_token_address(&wallet, &USDC_MINT),
-            GameError::InvalidAccount
-        );
-        let player_eata = &ctx.accounts.player_eata;
-        require_keys_eq!(player_eata.key(), custody_address(wallet), GameError::InvalidAccount);
-        require_keys_eq!(*player_eata.owner, ESPL_TOKEN_PROGRAM_ID, GameError::InvalidAccount);
-        transfer_from_table(
-            &ctx.accounts.table,
-            &ctx.accounts.table_token,
-            player_token.clone(),
-            &ctx.accounts.token_program,
-            amount,
-        )
+        if accounts.table.phase == TablePhase::Free {
+            accounts.table_token.reload()?;
+            let rest = accounts.table_token.amount;
+            if rest > 0 {
+                let treasury = accounts.treasury_token.to_account_info();
+                transfer_from_table(
+                    &accounts.table,
+                    &accounts.table_token,
+                    treasury,
+                    &accounts.token_program,
+                    rest,
+                )?;
+            }
+        }
+        Ok(())
     }
 
     pub fn start_game(mut ctx: Context<RequestRandomness>) -> Result<()> {
@@ -218,9 +231,11 @@ pub mod bankroll {
     }
 
     /// Pays every ranked share from table custody in one transaction, sweeps the fee, dust and
-    /// any stray deposit to the treasury, requires custody to end at zero and frees the table.
-    /// `remaining_accounts` holds (canonical ATA, eATA) for every seat, in seat order; only paid
-    /// seats' accounts are read, so a seat with nothing to receive cannot block settlement.
+    /// any stray deposit to the treasury and frees the table. `remaining_accounts` holds (canonical
+    /// ATA, delegation record of its eATA) for every seat, in seat order; only paid seats' accounts
+    /// are read, so a seat with nothing to receive cannot block settlement. A paid seat whose
+    /// accounts are gone or no longer delegated here cannot block it either: its share stays in
+    /// custody and the table waits in Refunding for that seat alone.
     pub fn settle<'info>(ctx: Context<'info, Settle<'info>>) -> Result<()> {
         require_public_er(&ctx.accounts.delegation_record)?;
         let payouts = ctx.accounts.table.payouts()?;
@@ -232,53 +247,102 @@ pub mod bankroll {
         );
         let remaining = ctx.remaining_accounts;
         require!(remaining.len() == count * 2, GameError::InvalidAccount);
-        let mut paid = 0u64;
-        for ((seat, payout), pair) in ctx.accounts.table.seats[..count]
-            .iter()
-            .zip(payouts)
-            .zip(remaining.chunks(2))
-        {
+        let (mut paid, mut owed, mut unpaid) = (0u64, 0u64, [false; MAX_SEATS]);
+        for (seat, pair) in remaining.chunks(2).enumerate() {
+            let payout = payouts[seat];
             if payout == 0 {
                 continue;
             }
-            let destination = Account::<TokenAccount>::try_from(&pair[0])?;
-            require_keys_eq!(destination.mint, USDC_MINT, GameError::InvalidAccount);
-            require_keys_eq!(destination.owner, seat.wallet, GameError::InvalidAccount);
-            require_keys_eq!(
-                pair[0].key(),
-                get_associated_token_address(&seat.wallet, &USDC_MINT),
-                GameError::InvalidAccount
-            );
-            require_keys_eq!(
-                pair[1].key(),
-                custody_address(seat.wallet),
-                GameError::InvalidAccount
-            );
-            require_keys_eq!(*pair[1].owner, ESPL_TOKEN_PROGRAM_ID, GameError::InvalidAccount);
-            transfer_from_table(
-                &ctx.accounts.table,
-                &ctx.accounts.table_token,
-                pair[0].clone(),
-                &ctx.accounts.token_program,
-                payout,
-            )?;
-            paid = paid.checked_add(payout).ok_or(GameError::Overflow)?;
+            if payable(ctx.accounts.table.seats[seat].wallet, &pair[0], &pair[1])? {
+                transfer_from_table(
+                    &ctx.accounts.table,
+                    &ctx.accounts.table_token,
+                    pair[0].clone(),
+                    &ctx.accounts.token_program,
+                    payout,
+                )?;
+                paid = paid.checked_add(payout).ok_or(GameError::Overflow)?;
+            } else {
+                unpaid[seat] = true;
+                owed = owed.checked_add(payout).ok_or(GameError::Overflow)?;
+            }
         }
+        let fee = custody
+            .checked_sub(paid)
+            .and_then(|rest| rest.checked_sub(owed))
+            .ok_or(GameError::Overflow)?;
         transfer_from_table(
             &ctx.accounts.table,
             &ctx.accounts.table_token,
             ctx.accounts.treasury_token.to_account_info(),
             &ctx.accounts.token_program,
-            custody.checked_sub(paid).ok_or(GameError::Overflow)?,
+            fee,
         )?;
         ctx.accounts.table_token.reload()?;
         require!(
-            ctx.accounts.table_token.amount == 0,
+            ctx.accounts.table_token.amount == owed,
             GameError::CustodyNotEmpty
         );
-        ctx.accounts.table.record_settlement(payouts);
+        ctx.accounts
+            .table
+            .record_settlement(payouts, unpaid, Clock::get()?.unix_timestamp);
         Ok(())
     }
+
+    /// ADMIN moves accrued fees from the treasury custody to its own canonical account on the ER,
+    /// capped at the treasury balance, then withdraws them through the Payments API.
+    pub fn withdraw_fees(ctx: Context<WithdrawFees>, amount: u64) -> Result<()> {
+        require!(
+            amount > 0 && amount <= ctx.accounts.treasury_token.amount,
+            GameError::InvalidAmount
+        );
+        let bump = [ctx.bumps.treasury];
+        let seeds: &[&[u8]] = &[TREASURY_SEED, &bump];
+        token::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.token_program.key(),
+                Transfer {
+                    from: ctx.accounts.treasury_token.to_account_info(),
+                    to: ctx.accounts.admin_token.to_account_info(),
+                    authority: ctx.accounts.treasury.to_account_info(),
+                },
+                &[seeds],
+            ),
+            amount,
+        )
+    }
+}
+
+/// Whether `wallet`'s canonical USDC ATA can receive a payout on this ER. The ER projects that
+/// ATA from the wallet's eATA and holds it (writable) only while the eATA is delegated to this
+/// validator, so the proof is the eATA's live delegation record, not account owners: an owner
+/// can undelegate the ATA and leave a Token-owned, read-only clone behind. False when that record
+/// is gone or points elsewhere, or the ATA is closed or frozen. Any other address, mint or owner
+/// is an error, so a caller can only ever show that the seat's own accounts are gone, never
+/// redirect its money.
+fn payable(wallet: Pubkey, token: &AccountInfo, custody_record: &AccountInfo) -> Result<bool> {
+    require_keys_eq!(
+        token.key(),
+        get_associated_token_address(&wallet, &USDC_MINT),
+        GameError::InvalidAccount
+    );
+    let custody = custody_address(wallet);
+    require_keys_eq!(
+        custody_record.key(),
+        ephemeral_rollups_sdk::pda::delegation_record_pda_from_delegated_account(&custody),
+        GameError::InvalidAccount
+    );
+    let live = delegated_to_public_er(custody_record, ESPL_TOKEN_PROGRAM_ID);
+    if *token.owner != Token::id() || !live {
+        return Ok(false);
+    }
+    let Ok(account) = TokenAccount::try_deserialize(&mut &token.try_borrow_data()?[..]) else {
+        return Ok(false);
+    };
+    // A live canonical ATA always has this mint and owner; anything else is not the seat's account.
+    require_keys_eq!(account.mint, USDC_MINT, GameError::InvalidAccount);
+    require_keys_eq!(account.owner, wallet, GameError::InvalidAccount);
+    Ok(!account.is_frozen())
 }
 
 fn pay_entry(accounts: &mut EnterTable) -> Result<()> {
@@ -319,21 +383,24 @@ fn vrf_request(payer: Pubkey, table: &Account<Table>) -> anchor_lang::solana_pro
 /// On base a Table is DLP-owned (or not yet delegated). Only on the ER can its canonical
 /// public-validator delegation record and a program-owned Table coexist.
 fn require_public_er(record: &AccountInfo) -> Result<()> {
-    require_keys_eq!(
-        *record.owner,
-        ephemeral_rollups_sdk::id(),
+    require!(
+        delegated_to_public_er(record, crate::ID),
         GameError::InvalidAccount
     );
-    let data = record.try_borrow_data()?;
-    let record = DelegationRecord::try_from_bytes_with_discriminator(&data)
-        .map_err(|_| error!(GameError::InvalidAccount))?;
-    require_keys_eq!(
-        record.authority,
-        PUBLIC_VALIDATOR,
-        GameError::InvalidAccount
-    );
-    require_keys_eq!(record.owner, crate::ID, GameError::InvalidAccount);
     Ok(())
+}
+
+/// Whether `record` is a live delegation record of an account owned by `owner` and delegated to
+/// the public validator.
+fn delegated_to_public_er(record: &AccountInfo, owner: Pubkey) -> bool {
+    if *record.owner != ephemeral_rollups_sdk::id() {
+        return false;
+    }
+    let Ok(data) = record.try_borrow_data() else {
+        return false;
+    };
+    DelegationRecord::try_from_bytes_with_discriminator(&data)
+        .is_ok_and(|record| record.authority == PUBLIC_VALIDATOR && record.owner == owner)
 }
 
 pub fn custody_address(owner: Pubkey) -> Pubkey {
@@ -426,15 +493,20 @@ pub struct RefundPlayer<'info> {
     pub delegation_record: UncheckedAccount<'info>,
     #[account(mut, address = get_associated_token_address(&table.key(), &USDC_MINT), token::mint = USDC_MINT, token::authority = table)]
     pub table_token: Box<Account<'info, TokenAccount>>,
-    /// CHECK: The seat's canonical USDC ATA; read and validated in the handler only when the
-    /// refund is nonzero, so a closed account cannot block a zero refund.
-    #[account(mut)]
+    /// CHECK: The seat's canonical USDC ATA, checked by `payable` when the refund is nonzero. Not
+    /// `mut`: clients pass it writable when it is live and read-only when it is gone (the ER
+    /// rejects writable accounts it does not hold), and a transfer to it needs it writable.
     pub player_token: UncheckedAccount<'info>,
     /// CHECK: Canonical public table custody on the ER.
     #[account(address = custody_address(table.key()), owner = ESPL_TOKEN_PROGRAM_ID)]
     pub table_eata: UncheckedAccount<'info>,
-    /// CHECK: The seat's canonical public custody; validated in the handler with player_token.
-    pub player_eata: UncheckedAccount<'info>,
+    /// CHECK: Delegation record of the seat's canonical eATA, checked by `payable`.
+    pub player_custody_record: UncheckedAccount<'info>,
+    #[account(mut, address = get_associated_token_address(&treasury_address(), &USDC_MINT), token::mint = USDC_MINT, constraint = treasury_token.owner == treasury_address() @ GameError::InvalidAccount)]
+    pub treasury_token: Box<Account<'info, TokenAccount>>,
+    /// CHECK: Canonical shared protocol custody on the same ER.
+    #[account(address = custody_address(treasury_address()), owner = ESPL_TOKEN_PROGRAM_ID)]
+    pub treasury_eata: UncheckedAccount<'info>,
     pub token_program: Program<'info, Token>,
 }
 
@@ -474,6 +546,26 @@ pub struct Settle<'info> {
     /// CHECK: Canonical shared protocol custody on the same ER.
     #[account(address = custody_address(treasury_address()), owner = ESPL_TOKEN_PROGRAM_ID)]
     pub treasury_eata: UncheckedAccount<'info>,
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct WithdrawFees<'info> {
+    #[account(address = ADMIN)]
+    pub admin: Signer<'info>,
+    /// CHECK: Dataless PDA that owns the treasury custody and signs its transfers.
+    #[account(seeds = [TREASURY_SEED], bump)]
+    pub treasury: UncheckedAccount<'info>,
+    #[account(mut, address = get_associated_token_address(&treasury.key(), &USDC_MINT), token::mint = USDC_MINT, token::authority = treasury)]
+    pub treasury_token: Box<Account<'info, TokenAccount>>,
+    /// CHECK: Canonical shared protocol custody; restored to the ESPL program only on the ER.
+    #[account(address = custody_address(treasury.key()), owner = ESPL_TOKEN_PROGRAM_ID)]
+    pub treasury_eata: UncheckedAccount<'info>,
+    #[account(mut, address = get_associated_token_address(&ADMIN, &USDC_MINT), token::mint = USDC_MINT, token::authority = admin)]
+    pub admin_token: Box<Account<'info, TokenAccount>>,
+    /// CHECK: The admin's canonical public custody on the same ER.
+    #[account(address = custody_address(ADMIN), owner = ESPL_TOKEN_PROGRAM_ID)]
+    pub admin_eata: UncheckedAccount<'info>,
     pub token_program: Program<'info, Token>,
 }
 

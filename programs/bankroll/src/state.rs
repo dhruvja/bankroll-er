@@ -9,6 +9,9 @@ pub const NO_OWNER: u8 = u8::MAX;
 pub const NO_OFFER: u8 = 0;
 pub const LOBBY_SECONDS: i64 = 600;
 pub const FEE_BPS: u64 = 300;
+/// How long a Refunding seat whose token accounts are gone keeps its share before anyone may send
+/// it to the treasury instead, so one closed account cannot keep a table out of the pool.
+pub const REFUND_GRACE_SECONDS: i64 = 1800;
 /// How long a seat that isn't rolling waits before it may re-request a missing roll.
 pub const OTHER_SEAT_RETRY_SECONDS: i64 = 3 * crate::board::VRF_RETRY_SECONDS;
 /// Ranked shares in bps of the pot, indexed by `player_count - 2`. The 2-player row (9700 to the
@@ -79,6 +82,7 @@ pub struct Table {
     /// Last successful player action; `force_timeout` and VRF callbacks never move it.
     pub last_action_at: i64,
     pub stage: Stage,
+    /// The current stage's deadline while Playing; in Refunding, when the refund grace ends.
     pub stage_deadline: i64,
     /// Index into `order` of the seat whose turn it is.
     pub turn: u8,
@@ -103,6 +107,7 @@ pub struct Table {
 pub struct Seat {
     pub wallet: Pubkey,
     pub name: [u8; NAME_LEN],
+    /// In Refunding, whether this seat's money has left custody (or it had none to receive).
     pub refunded: bool,
     pub cash: i64,
     pub position: u8,
@@ -220,4 +225,12 @@ pub enum GameError {
     OffersClosed,
     #[msg("That seat has no such offer; it may have changed")]
     OfferChanged,
+    #[msg("The idle deadline has passed; the game can only end by ranking")]
+    IdleDeadlinePassed,
+    #[msg("Amount must be positive and at most the treasury balance")]
+    InvalidAmount,
+    #[msg(
+        "The seat's token accounts are gone; its share goes to the treasury after the refund grace"
+    )]
+    RecipientMissing,
 }

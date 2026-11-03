@@ -58,6 +58,7 @@ struct ChaosStats {
     offers: u64,
     trades_completed: u64,
     cash_flows_checked: u64,
+    roll_flows_checked: u64,
 }
 
 /// SplitMix64: deterministic, dependency-free.
@@ -208,7 +209,16 @@ fn close_out(table: &mut Table, rng: &mut Rng, now: &mut i64, emergency: bool, c
     if table.phase == TablePhase::Finished && !emergency {
         let payouts = table.payouts().unwrap();
         assert_conserved(pot, payouts.iter().sum(), true, context);
-        table.record_settlement(payouts);
+        // Sometimes a paid seat's token accounts are gone at settle; it then pulls its share later.
+        let unpaid = payouts.map(|payout| payout > 0 && rng.chance(5));
+        table.record_settlement(payouts, unpaid, *now);
+        for seat in (0..table.count()).filter(|&seat| unpaid[seat]) {
+            assert_eq!(
+                table.refund(seat).unwrap().1,
+                payouts[seat],
+                "{context}: deferred share"
+            );
+        }
     } else {
         let finished = table.phase == TablePhase::Finished;
         if finished {
@@ -218,6 +228,13 @@ fn close_out(table: &mut Table, rng: &mut Rng, now: &mut i64, emergency: bool, c
         assert_eq!(table.phase, TablePhase::Refunding, "{context}");
         let mut paid = 0;
         for seat in 0..table.count() {
+            if table.seats[seat].refunded {
+                assert!(
+                    finished && table.seats[seat].payout == 0,
+                    "{context}: only a zero share is done at the switch"
+                );
+                continue;
+            }
             paid += table.refund(seat).unwrap().1;
         }
         assert_conserved(pot, paid, finished, context);
@@ -450,20 +467,26 @@ fn bot_game(table: &mut Table, rng: &mut Rng, players: usize, target: u64, now: 
     (round, payouts, trades)
 }
 
-/// A completed trade swaps exactly the two properties and pays exactly the two bonuses.
+/// A completed trade swaps exactly the two properties and pays exactly the two bonuses. A side the
+/// swap left bankrupt is eliminated: its cash is discarded and its properties are unowned.
 fn assert_trade_swapped(before: &Table, after: &Table, lander: usize, seat: usize, give: usize, take: usize, context: &str) {
+    let bankrupt = |side: usize| before.is_active(side) && !after.is_active(side);
     for space in 0..SPACES {
         let expected = match space {
             _ if space == give => seat as u8,
             _ if space == take => lander as u8,
             _ => before.board[space].owner,
         };
+        let expected = if expected != NO_OWNER && bankrupt(expected as usize) { NO_OWNER } else { expected };
         assert_eq!(after.board[space].owner, expected, "{context}: trade moved space {space}");
-        assert_eq!(after.board[space].buildings, before.board[space].buildings, "{context}");
+        if expected != NO_OWNER {
+            assert_eq!(after.board[space].buildings, before.board[space].buildings, "{context}");
+        }
     }
     for other in 0..MAX_SEATS {
         let bonus = if other == lander || other == seat { TRADE_BONUS } else { 0 };
-        assert_eq!(after.seats[other].cash, before.seats[other].cash + bonus, "{context}: trade cash of seat {other}");
+        let expected = if bankrupt(other) { 0 } else { before.seats[other].cash + bonus };
+        assert_eq!(after.seats[other].cash, expected, "{context}: trade cash of seat {other}");
     }
 }
 
@@ -611,18 +634,51 @@ fn chaos_game(table: &mut Table, rng: &mut Rng, game: usize, now: &mut i64, stat
 }
 
 /// The bank side of every accepted instruction that eliminates nobody: buy, build, sell and bail
-/// move exactly their price, a trade adds exactly the two bonuses, and everything else (rolls,
-/// passes, offers, timeouts) moves no cash. Roll callbacks (rent, cards, salary) are covered by
-/// the unit tests instead.
+/// move exactly their price, a trade adds exactly the two bonuses, a roll callback adds salary for
+/// each pass of Start plus the drawn card's bank amount (rent and pay/collect cards only move cash
+/// between seats), and everything else (rolls, passes, offers, timeouts) moves no cash.
 fn assert_player_cash_flow(before: &Table, after: &Table, action: u64, space: u8, context: &str, stats: &mut ChaosStats) {
     let eliminated = |table: &Table| table.seats.iter().filter(|seat| seat.eliminated_at != 0).count();
-    if eliminated(after) != eliminated(before) || (30..=49).contains(&action) {
+    // The turn-order callback deals the starting cash instead of moving it.
+    if eliminated(after) != eliminated(before) || before.vrf_purpose == VrfPurpose::Order {
         return;
     }
     let total = |table: &Table| table.seats.iter().map(|seat| seat.cash).sum::<i64>();
     let seat = before.current_seat();
     let spec = BOARD.get(space as usize);
     let expected = match action {
+        30..=49 => {
+            let landed = before.seats[seat].position as usize + after.last_roll as usize;
+            let salary = if landed >= SPACES { SALARY } else { 0 };
+            let card = match after.last_card {
+                0 => 0,
+                drawn => {
+                    let card = LUCKY_DECK[drawn as usize - 1];
+                    let buildings: i64 = before
+                        .board
+                        .iter()
+                        .filter(|lot| lot.owner as usize == seat)
+                        .map(|lot| lot.buildings as i64)
+                        .sum();
+                    match card.kind {
+                        LuckyKind::Bank => card.amount,
+                        LuckyKind::ToStart => SALARY,
+                        LuckyKind::Move
+                            if (landed % SPACES) as i64 + card.amount >= SPACES as i64 =>
+                        {
+                            SALARY
+                        }
+                        LuckyKind::Repairs => -card.amount * buildings,
+                        LuckyKind::Move
+                        | LuckyKind::PayEach
+                        | LuckyKind::CollectEach
+                        | LuckyKind::ToJail => 0,
+                    }
+                }
+            };
+            stats.roll_flows_checked += 1;
+            salary + card
+        }
         50..=59 => -BOARD[before.seats[seat].position as usize].price,
         65..=74 => -spec.unwrap().building_cost,
         75..=79 => {
