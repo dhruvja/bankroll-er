@@ -97,9 +97,24 @@ async function lamports(owner: PublicKey) {
   return { base: await client.base.getBalance(owner), er: await client.er.getBalance(owner) };
 }
 
+type Payments = ReturnType<typeof filePayments>['payments'];
+
+/** Funding runs before any game exists and is driven by balances and saved payment receipts, so a
+ * transient RPC or Payments API failure is retried a bounded number of times instead of failing
+ * the whole (up to 65-minute) run. */
+async function fundPlayers(players: Keypair[], admin: Keypair, payments: Payments, entry: number, base: Record<string, string>) {
+  for (let attempt = 1; ; attempt++) {
+    try { return await fundPlayersOnce(players, admin, payments, entry, base); } catch (error) {
+      if (attempt === 3) throw error;
+      console.log(`funding attempt ${attempt} failed (${error instanceof Error ? error.message : String(error)}); retrying in 15 s`);
+      await pause(15_000);
+    }
+  }
+}
+
 /** Zero SOL, always: refuse funded wallets. Then top each play balance up to one entry with the
  * sponsored deposit, the admin sending base USDC first when a wallet lacks it. */
-async function fundPlayers(players: Keypair[], admin: Keypair, payments: ReturnType<typeof filePayments>['payments'], entry: number, base: Record<string, string>) {
+async function fundPlayersOnce(players: Keypair[], admin: Keypair, payments: Payments, entry: number, base: Record<string, string>) {
   for (const player of players) {
     const value = await lamports(player.publicKey);
     invariant(value.base === 0 && value.er === 0, `${player.publicKey.toBase58()} holds lamports; smoke wallets must have 0 SOL.`);
