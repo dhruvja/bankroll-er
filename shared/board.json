@@ -1,0 +1,343 @@
+{
+  "version": 1,
+  "status": "final",
+  "currency": "game dollars (whole units)",
+  "spaces": [
+    {
+      "index": 0,
+      "name": "Start",
+      "kind": "start"
+    },
+    {
+      "index": 1,
+      "name": "Lisbon",
+      "kind": "city",
+      "group": "Brown",
+      "price": 60,
+      "rent": 6,
+      "buildingCost": 50
+    },
+    {
+      "index": 2,
+      "name": "Athens",
+      "kind": "city",
+      "group": "Brown",
+      "price": 80,
+      "rent": 8,
+      "buildingCost": 50
+    },
+    {
+      "index": 3,
+      "name": "Lucky Card",
+      "kind": "lucky"
+    },
+    {
+      "index": 4,
+      "name": "Railway",
+      "kind": "public",
+      "group": "Public",
+      "price": 200,
+      "rent": 25
+    },
+    {
+      "index": 5,
+      "name": "Cairo",
+      "kind": "city",
+      "group": "Sky",
+      "price": 100,
+      "rent": 10,
+      "buildingCost": 50
+    },
+    {
+      "index": 6,
+      "name": "Jail",
+      "kind": "jail"
+    },
+    {
+      "index": 7,
+      "name": "Mumbai",
+      "kind": "city",
+      "group": "Sky",
+      "price": 120,
+      "rent": 12,
+      "buildingCost": 50
+    },
+    {
+      "index": 8,
+      "name": "Bangkok",
+      "kind": "city",
+      "group": "Sky",
+      "price": 140,
+      "rent": 14,
+      "buildingCost": 50
+    },
+    {
+      "index": 9,
+      "name": "Lucky Card",
+      "kind": "lucky"
+    },
+    {
+      "index": 10,
+      "name": "Airport",
+      "kind": "public",
+      "group": "Public",
+      "price": 200,
+      "rent": 25
+    },
+    {
+      "index": 11,
+      "name": "Madrid",
+      "kind": "city",
+      "group": "Pink",
+      "price": 160,
+      "rent": 16,
+      "buildingCost": 100
+    },
+    {
+      "index": 12,
+      "name": "Auction",
+      "kind": "auction"
+    },
+    {
+      "index": 13,
+      "name": "Rome",
+      "kind": "city",
+      "group": "Pink",
+      "price": 180,
+      "rent": 18,
+      "buildingCost": 100
+    },
+    {
+      "index": 14,
+      "name": "Seoul",
+      "kind": "city",
+      "group": "Orange",
+      "price": 200,
+      "rent": 20,
+      "buildingCost": 100
+    },
+    {
+      "index": 15,
+      "name": "Lucky Card",
+      "kind": "lucky"
+    },
+    {
+      "index": 16,
+      "name": "Harbor",
+      "kind": "public",
+      "group": "Public",
+      "price": 200,
+      "rent": 25
+    },
+    {
+      "index": 17,
+      "name": "Berlin",
+      "kind": "city",
+      "group": "Orange",
+      "price": 220,
+      "rent": 22,
+      "buildingCost": 100
+    },
+    {
+      "index": 18,
+      "name": "Lucky Card",
+      "kind": "lucky"
+    },
+    {
+      "index": 19,
+      "name": "Paris",
+      "kind": "city",
+      "group": "Green",
+      "price": 260,
+      "rent": 26,
+      "buildingCost": 150
+    },
+    {
+      "index": 20,
+      "name": "London",
+      "kind": "city",
+      "group": "Green",
+      "price": 280,
+      "rent": 28,
+      "buildingCost": 150
+    },
+    {
+      "index": 21,
+      "name": "Tokyo",
+      "kind": "city",
+      "group": "Gold",
+      "price": 320,
+      "rent": 32,
+      "buildingCost": 200
+    },
+    {
+      "index": 22,
+      "name": "Power Plant",
+      "kind": "public",
+      "group": "Public",
+      "price": 200,
+      "rent": 25
+    },
+    {
+      "index": 23,
+      "name": "New York",
+      "kind": "city",
+      "group": "Gold",
+      "price": 400,
+      "rent": 40,
+      "buildingCost": 200
+    }
+  ],
+  "groups": {
+    "Brown": [
+      1,
+      2
+    ],
+    "Sky": [
+      5,
+      7,
+      8
+    ],
+    "Pink": [
+      11,
+      13
+    ],
+    "Orange": [
+      14,
+      17
+    ],
+    "Green": [
+      19,
+      20
+    ],
+    "Gold": [
+      21,
+      23
+    ]
+  },
+  "publics": [
+    4,
+    10,
+    16,
+    22
+  ],
+  "rules": {
+    "startCash": 2000,
+    "seatBonusStepByTarget": {
+      "3000": 75,
+      "5000": 125,
+      "7000": 175
+    },
+    "salary": 200,
+    "jailSpace": 6,
+    "jailTurns": 3,
+    "bail": 150,
+    "tradeBonus": 100,
+    "saleBps": 8000,
+    "bankruptCashBelow": -500,
+    "maxBuildingsPerCity": 3,
+    "maxRollsPerTurn": 3,
+    "groupRentMultiplier": 2,
+    "buildingRentMultipliers": [
+      4,
+      7,
+      11
+    ],
+    "targets": [
+      3000,
+      5000,
+      7000
+    ],
+    "defaultTargetByPlayers": {
+      "2": 3000,
+      "3": 5000,
+      "4": 7000
+    },
+    "cardMoveOntoLuckyDrawsAgain": false,
+    "deadlinesSec": {
+      "preRoll": 30,
+      "buyDecision": 20,
+      "tradeOpen": 20,
+      "tradeOffers": 20,
+      "tradeOwnerDecision": 15,
+      "vrfRetry": 15,
+      "idle": 3600,
+      "emergencyRefundAfterIdle": 1800
+    },
+    "strikesToForfeit": 3
+  },
+  "luckyDeck": [
+    {
+      "id": 1,
+      "kind": "bank",
+      "amount": 300,
+      "text": "Collect $300 from the bank."
+    },
+    {
+      "id": 2,
+      "kind": "bank",
+      "amount": 200,
+      "text": "Collect $200."
+    },
+    {
+      "id": 3,
+      "kind": "bank",
+      "amount": 400,
+      "text": "Collect $400."
+    },
+    {
+      "id": 4,
+      "kind": "bank",
+      "amount": -100,
+      "text": "Pay $100 to the bank."
+    },
+    {
+      "id": 5,
+      "kind": "bank",
+      "amount": -50,
+      "text": "Pay $50 to the bank."
+    },
+    {
+      "id": 6,
+      "kind": "pay_each",
+      "amount": 25,
+      "text": "Pay each other active player $25."
+    },
+    {
+      "id": 7,
+      "kind": "collect_each",
+      "amount": 25,
+      "text": "Collect $25 from each other active player."
+    },
+    {
+      "id": 8,
+      "kind": "to_start",
+      "amount": 0,
+      "text": "Advance to Start (collect salary)."
+    },
+    {
+      "id": 9,
+      "kind": "to_jail",
+      "amount": 0,
+      "text": "Go to Jail."
+    },
+    {
+      "id": 10,
+      "kind": "move",
+      "amount": 3,
+      "text": "Move forward 3 (resolve the space you land on)."
+    },
+    {
+      "id": 11,
+      "kind": "move",
+      "amount": -3,
+      "text": "Move back 3 (resolve the space you land on, no salary)."
+    },
+    {
+      "id": 12,
+      "kind": "repairs",
+      "amount": 25,
+      "text": "Building repairs: pay $25 per building."
+    }
+  ]
+}

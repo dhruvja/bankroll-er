@@ -1,0 +1,37 @@
+{
+  "name": "bankroll-er",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && vite build --config web/vite.config.ts",
+    "test": "node --import tsx --test tests/ts/*.test.ts",
+    "gen-board": "node --import tsx scripts/gen-board.ts",
+    "bootstrap": "node --import tsx scripts/bootstrap.ts",
+    "smoke": "node --import tsx scripts/smoke.ts",
+    "drain-check": "node --import tsx scripts/drain-check.ts"
+  },
+  "dependencies": {
+    "@anchor-lang/core": "1.2.0",
+    "@magicblock-labs/ephemeral-rollups-sdk": "0.17.2",
+    "@solana/spl-token": "0.4.15",
+    "@solana/web3.js": "1.99.0",
+    "bn.js": "5.2.3",
+    "bs58": "6.0.0",
+    "buffer": "6.0.3",
+    "react": "19.2.6",
+    "react-dom": "19.2.6"
+  },
+  "devDependencies": {
+    "@types/bn.js": "^5.2.0",
+    "@types/node": "^22.19.19",
+    "@types/react": "^19.2.14",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.2",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3",
+    "vite": "^8.0.13"
+  }
+}

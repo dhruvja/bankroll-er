@@ -1,0 +1,1438 @@
+{
+  "address": "72xAdhJ15tqVXZ95oKKxBYfEbJpJsDThcMCwwtonibEq",
+  "metadata": {
+    "name": "bankroll",
+    "version": "0.1.0",
+    "spec": "0.1.0"
+  },
+  "instructions": [
+    {
+      "name": "buy",
+      "discriminator": [
+        102,
+        6,
+        61,
+        18,
+        1,
+        218,
+        235,
+        234
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "signer": true
+        },
+        {
+          "name": "table",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  98,
+                  108,
+                  101,
+                  95,
+                  118,
+                  49
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "table.index",
+                "account": "Table"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "cancel_or_expire",
+      "discriminator": [
+        128,
+        238,
+        88,
+        75,
+        186,
+        76,
+        223,
+        106
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "signer": true
+        },
+        {
+          "name": "table",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  98,
+                  108,
+                  101,
+                  95,
+                  118,
+                  49
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "table.index",
+                "account": "Table"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "consume_randomness",
+      "discriminator": [
+        190,
+        217,
+        49,
+        162,
+        99,
+        26,
+        73,
+        234
+      ],
+      "accounts": [
+        {
+          "name": "vrf_program_identity",
+          "docs": [
+            "Scoped VRF identity PDA, bound to this program. Its presence as a signer proves",
+            "the callback was issued by the VRF program for this program."
+          ],
+          "signer": true
+        },
+        {
+          "name": "table",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  98,
+                  108,
+                  101,
+                  95,
+                  118,
+                  49
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "table.index",
+                "account": "Table"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "randomness",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "request_nonce",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "create_table",
+      "discriminator": [
+        214,
+        142,
+        131,
+        250,
+        242,
+        83,
+        135,
+        185
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true,
+          "address": "653bMLonrEbTNbSM9g1vH8PJATH1uh6wYNr9SYEJSzsY"
+        },
+        {
+          "name": "table",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  98,
+                  108,
+                  101,
+                  95,
+                  118,
+                  49
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "index",
+          "type": "u16"
+        }
+      ]
+    },
+    {
+      "name": "delegate_table",
+      "discriminator": [
+        161,
+        66,
+        67,
+        113,
+        58,
+        219,
+        238,
+        170
+      ],
+      "accounts": [
+        {
+          "name": "admin",
+          "writable": true,
+          "signer": true,
+          "address": "653bMLonrEbTNbSM9g1vH8PJATH1uh6wYNr9SYEJSzsY"
+        },
+        {
+          "name": "buffer_table",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  117,
+                  102,
+                  102,
+                  101,
+                  114
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "table"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                89,
+                166,
+                20,
+                47,
+                185,
+                210,
+                85,
+                137,
+                173,
+                43,
+                50,
+                110,
+                124,
+                226,
+                219,
+                77,
+                133,
+                130,
+                242,
+                77,
+                163,
+                255,
+                37,
+                90,
+                107,
+                53,
+                243,
+                192,
+                46,
+                5,
+                178,
+                162
+              ]
+            }
+          }
+        },
+        {
+          "name": "delegation_record_table",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  108,
+                  101,
+                  103,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "table"
+              }
+            ],
+            "program": {
+              "kind": "account",
+              "path": "delegation_program"
+            }
+          }
+        },
+        {
+          "name": "delegation_metadata_table",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  100,
+                  101,
+                  108,
+                  101,
+                  103,
+                  97,
+                  116,
+                  105,
+                  111,
+                  110,
+                  45,
+                  109,
+                  101,
+                  116,
+                  97,
+                  100,
+                  97,
+                  116,
+                  97
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "table"
+              }
+            ],
+            "program": {
+              "kind": "account",
+              "path": "delegation_program"
+            }
+          }
+        },
+        {
+          "name": "table",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  98,
+                  108,
+                  101,
+                  95,
+                  118,
+                  49
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "index"
+              }
+            ]
+          }
+        },
+        {
+          "name": "owner_program",
+          "address": "72xAdhJ15tqVXZ95oKKxBYfEbJpJsDThcMCwwtonibEq"
+        },
+        {
+          "name": "delegation_program",
+          "address": "DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "index",
+          "type": "u16"
+        }
+      ]
+    },
+    {
+      "name": "force_timeout",
+      "discriminator": [
+        223,
+        41,
+        225,
+        244,
+        115,
+        43,
+        255,
+        74
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "signer": true
+        },
+        {
+          "name": "table",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  98,
+                  108,
+                  101,
+                  95,
+                  118,
+                  49
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "table.index",
+                "account": "Table"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "join_table",
+      "discriminator": [
+        14,
+        117,
+        84,
+        51,
+        95,
+        146,
+        171,
+        70
+      ],
+      "accounts": [
+        {
+          "name": "player",
+          "signer": true
+        },
+        {
+          "name": "table",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  98,
+                  108,
+                  101,
+                  95,
+                  118,
+                  49
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "table.index",
+                "account": "Table"
+              }
+            ]
+          }
+        },
+        {
+          "name": "delegation_record"
+        },
+        {
+          "name": "player_token",
+          "writable": true
+        },
+        {
+          "name": "table_token",
+          "writable": true
+        },
+        {
+          "name": "table_eata"
+        },
+        {
+          "name": "player_eata"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "expected_nonce",
+          "type": "u64"
+        },
+        {
+          "name": "name",
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "name": "open_table",
+      "docs": [
+        "A zero-SOL host claims a Free table and pays its own entry in the same instruction."
+      ],
+      "discriminator": [
+        251,
+        98,
+        127,
+        54,
+        103,
+        12,
+        106,
+        246
+      ],
+      "accounts": [
+        {
+          "name": "player",
+          "signer": true
+        },
+        {
+          "name": "table",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  98,
+                  108,
+                  101,
+                  95,
+                  118,
+                  49
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "table.index",
+                "account": "Table"
+              }
+            ]
+          }
+        },
+        {
+          "name": "delegation_record"
+        },
+        {
+          "name": "player_token",
+          "writable": true
+        },
+        {
+          "name": "table_token",
+          "writable": true
+        },
+        {
+          "name": "table_eata"
+        },
+        {
+          "name": "player_eata"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "entry",
+          "type": "u64"
+        },
+        {
+          "name": "max_players",
+          "type": "u8"
+        },
+        {
+          "name": "target",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "pass",
+      "discriminator": [
+        8,
+        14,
+        180,
+        117,
+        151,
+        60,
+        46,
+        71
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "signer": true
+        },
+        {
+          "name": "table",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  98,
+                  108,
+                  101,
+                  95,
+                  118,
+                  49
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "table.index",
+                "account": "Table"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "refund_player",
+      "docs": [
+        "Returns one full entry, with no fee, from a Refunding table."
+      ],
+      "discriminator": [
+        251,
+        32,
+        76,
+        233,
+        171,
+        106,
+        120,
+        46
+      ],
+      "accounts": [
+        {
+          "name": "table",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  98,
+                  108,
+                  101,
+                  95,
+                  118,
+                  49
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "table.index",
+                "account": "Table"
+              }
+            ]
+          }
+        },
+        {
+          "name": "delegation_record"
+        },
+        {
+          "name": "table_token",
+          "writable": true
+        },
+        {
+          "name": "player_token",
+          "writable": true
+        },
+        {
+          "name": "table_eata"
+        },
+        {
+          "name": "player_eata"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": [
+        {
+          "name": "seat",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "roll",
+      "discriminator": [
+        143,
+        143,
+        93,
+        91,
+        13,
+        254,
+        64,
+        93
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "table",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  98,
+                  108,
+                  101,
+                  95,
+                  118,
+                  49
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "table.index",
+                "account": "Table"
+              }
+            ]
+          }
+        },
+        {
+          "name": "oracle_queue",
+          "writable": true,
+          "address": "5hBR571xnXppuCPveTrctfTU7tJLSN94nq7kv7FRK5Tc"
+        },
+        {
+          "name": "program_identity",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  100,
+                  101,
+                  110,
+                  116,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "vrf_program",
+          "address": "Vrf1RNUjXmQGjmQrQLvJHs9SNkvDJEsRVFPkfSQUwGz"
+        },
+        {
+          "name": "slot_hashes",
+          "address": "SysvarS1otHashes111111111111111111111111111"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "settle",
+      "docs": [
+        "Pays every ranked share from table custody in one transaction, sweeps the fee, dust and",
+        "any stray deposit to the treasury, requires custody to end at zero and frees the table.",
+        "`remaining_accounts` holds (canonical ATA, eATA) for every seat, in seat order."
+      ],
+      "discriminator": [
+        175,
+        42,
+        185,
+        87,
+        144,
+        131,
+        102,
+        212
+      ],
+      "accounts": [
+        {
+          "name": "table",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  98,
+                  108,
+                  101,
+                  95,
+                  118,
+                  49
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "table.index",
+                "account": "Table"
+              }
+            ]
+          }
+        },
+        {
+          "name": "delegation_record"
+        },
+        {
+          "name": "table_token",
+          "writable": true
+        },
+        {
+          "name": "table_eata"
+        },
+        {
+          "name": "treasury_token",
+          "writable": true
+        },
+        {
+          "name": "treasury_eata"
+        },
+        {
+          "name": "token_program",
+          "address": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "start_game",
+      "discriminator": [
+        249,
+        47,
+        252,
+        172,
+        184,
+        162,
+        245,
+        14
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "table",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  98,
+                  108,
+                  101,
+                  95,
+                  118,
+                  49
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "table.index",
+                "account": "Table"
+              }
+            ]
+          }
+        },
+        {
+          "name": "oracle_queue",
+          "writable": true,
+          "address": "5hBR571xnXppuCPveTrctfTU7tJLSN94nq7kv7FRK5Tc"
+        },
+        {
+          "name": "program_identity",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  105,
+                  100,
+                  101,
+                  110,
+                  116,
+                  105,
+                  116,
+                  121
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "vrf_program",
+          "address": "Vrf1RNUjXmQGjmQrQLvJHs9SNkvDJEsRVFPkfSQUwGz"
+        },
+        {
+          "name": "slot_hashes",
+          "address": "SysvarS1otHashes111111111111111111111111111"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Table",
+      "discriminator": [
+        34,
+        100,
+        138,
+        97,
+        236,
+        129,
+        230,
+        112
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "InvalidEntry",
+      "msg": "Entry must be 1, 5, or 10 devnet USDC"
+    },
+    {
+      "code": 6001,
+      "name": "InvalidConfig",
+      "msg": "Players must be 2-4 and the target 3000, 5000 or 7000"
+    },
+    {
+      "code": 6002,
+      "name": "InvalidName",
+      "msg": "Name must contain 1 to 16 UTF-8 bytes"
+    },
+    {
+      "code": 6003,
+      "name": "InvalidPhase",
+      "msg": "Operation is not allowed in this phase"
+    },
+    {
+      "code": 6004,
+      "name": "InvalidStage",
+      "msg": "Operation is not allowed in this turn stage"
+    },
+    {
+      "code": 6005,
+      "name": "LobbyClosed",
+      "msg": "Lobby is closed or expired"
+    },
+    {
+      "code": 6006,
+      "name": "StaleNonce",
+      "msg": "This invite is for an earlier game at this table"
+    },
+    {
+      "code": 6007,
+      "name": "TableFull",
+      "msg": "Table is full"
+    },
+    {
+      "code": 6008,
+      "name": "AlreadyJoined",
+      "msg": "Wallet already joined"
+    },
+    {
+      "code": 6009,
+      "name": "NotEnoughPlayers",
+      "msg": "At least two players are required"
+    },
+    {
+      "code": 6010,
+      "name": "Unauthorized",
+      "msg": "Unauthorized signer"
+    },
+    {
+      "code": 6011,
+      "name": "InvalidAccount",
+      "msg": "Invalid account owner or address"
+    },
+    {
+      "code": 6012,
+      "name": "TooEarly",
+      "msg": "Deadline has not passed"
+    },
+    {
+      "code": 6013,
+      "name": "AlreadyRefunded",
+      "msg": "Deposit was already refunded"
+    },
+    {
+      "code": 6014,
+      "name": "Overflow",
+      "msg": "Arithmetic overflow"
+    },
+    {
+      "code": 6015,
+      "name": "UnexpectedRandomness",
+      "msg": "Invalid or repeated VRF callback"
+    },
+    {
+      "code": 6016,
+      "name": "InsufficientCash",
+      "msg": "Not enough cash"
+    },
+    {
+      "code": 6017,
+      "name": "CustodyShort",
+      "msg": "Table custody does not hold the pot"
+    },
+    {
+      "code": 6018,
+      "name": "CustodyNotEmpty",
+      "msg": "Table custody must be empty after settlement"
+    }
+  ],
+  "types": [
+    {
+      "name": "Lot",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "owner",
+            "type": "u8"
+          },
+          {
+            "name": "buildings",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Seat",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "wallet",
+            "type": "pubkey"
+          },
+          {
+            "name": "name",
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          },
+          {
+            "name": "refunded",
+            "type": "bool"
+          },
+          {
+            "name": "cash",
+            "type": "i64"
+          },
+          {
+            "name": "position",
+            "type": "u8"
+          },
+          {
+            "name": "jail_turns",
+            "type": "u8"
+          },
+          {
+            "name": "strikes",
+            "type": "u8"
+          },
+          {
+            "name": "eliminated_at",
+            "docs": [
+              "0 while active."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "payout",
+            "docs": [
+              "Set by `settle` for the results screen."
+            ],
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Stage",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Idle"
+          },
+          {
+            "name": "Ordering"
+          },
+          {
+            "name": "PreRoll"
+          },
+          {
+            "name": "Rolling"
+          },
+          {
+            "name": "BuyDecision"
+          },
+          {
+            "name": "TradeOpen"
+          },
+          {
+            "name": "TradeOffers"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Table",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "index",
+            "type": "u16"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "phase",
+            "docs": [
+              "Offset 11 (after the 8-byte discriminator); the free-table finder filters on it."
+            ],
+            "type": {
+              "defined": {
+                "name": "TablePhase"
+              }
+            }
+          },
+          {
+            "name": "game_nonce",
+            "docs": [
+              "Increments on every `open_table`; invites and `join_table` bind to it."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "vrf_nonce",
+            "docs": [
+              "Monotonic across games so a late callback can never match a later request."
+            ],
+            "type": "u64"
+          },
+          {
+            "name": "host",
+            "type": "pubkey"
+          },
+          {
+            "name": "entry",
+            "type": "u64"
+          },
+          {
+            "name": "max_players",
+            "type": "u8"
+          },
+          {
+            "name": "target",
+            "type": "u64"
+          },
+          {
+            "name": "player_count",
+            "type": "u8"
+          },
+          {
+            "name": "lobby_deadline",
+            "type": "i64"
+          },
+          {
+            "name": "last_action_at",
+            "docs": [
+              "Last successful player action; `force_timeout` and VRF callbacks never move it."
+            ],
+            "type": "i64"
+          },
+          {
+            "name": "stage",
+            "type": {
+              "defined": {
+                "name": "Stage"
+              }
+            }
+          },
+          {
+            "name": "stage_deadline",
+            "type": "i64"
+          },
+          {
+            "name": "turn",
+            "docs": [
+              "Index into `order` of the seat whose turn it is."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "order",
+            "type": {
+              "array": [
+                "u8",
+                4
+              ]
+            }
+          },
+          {
+            "name": "round",
+            "type": "u32"
+          },
+          {
+            "name": "rolls_this_turn",
+            "type": "u8"
+          },
+          {
+            "name": "extra_roll",
+            "type": "bool"
+          },
+          {
+            "name": "vrf_purpose",
+            "type": {
+              "defined": {
+                "name": "VrfPurpose"
+              }
+            }
+          },
+          {
+            "name": "vrf_requested_at",
+            "type": "i64"
+          },
+          {
+            "name": "last_roll",
+            "type": "u8"
+          },
+          {
+            "name": "last_card",
+            "type": "u8"
+          },
+          {
+            "name": "elimination_seq",
+            "docs": [
+              "Highest `eliminated_at` used so far; seats eliminated by one instruction share a value."
+            ],
+            "type": "u8"
+          },
+          {
+            "name": "ended_at",
+            "type": "i64"
+          },
+          {
+            "name": "seats",
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "Seat"
+                  }
+                },
+                4
+              ]
+            }
+          },
+          {
+            "name": "board",
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "Lot"
+                  }
+                },
+                24
+              ]
+            }
+          },
+          {
+            "name": "trade",
+            "type": {
+              "defined": {
+                "name": "Trade"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "TablePhase",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Free"
+          },
+          {
+            "name": "Lobby"
+          },
+          {
+            "name": "Playing"
+          },
+          {
+            "name": "Finished"
+          },
+          {
+            "name": "Refunding"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Trade",
+      "docs": [
+        "Auction-space trade (phase 04). Reserved in the layout now so phase 04 needs no migration."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "space",
+            "type": "u8"
+          },
+          {
+            "name": "offers",
+            "type": {
+              "array": [
+                "u8",
+                4
+              ]
+            }
+          },
+          {
+            "name": "deadline",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "VrfPurpose",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "None"
+          },
+          {
+            "name": "Order"
+          },
+          {
+            "name": "Roll"
+          }
+        ]
+      }
+    }
+  ]
+}

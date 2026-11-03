@@ -1,0 +1,183 @@
+use anchor_lang::prelude::*;
+
+use crate::board::SPACES;
+
+pub const MAX_SEATS: usize = 4;
+pub const NAME_LEN: usize = 16;
+pub const NO_OWNER: u8 = u8::MAX;
+pub const LOBBY_SECONDS: i64 = 600;
+pub const FEE_BPS: u64 = 300;
+/// Ranked shares in bps of the pot, indexed by `player_count - 2`. The 2-player row (9700 to the
+/// winner) was confirmed by the user on 2026-11-03. Every row plus the fee sums to 10,000.
+pub const SHARES_BPS: [[u64; 3]; 3] = [[9700, 0, 0], [6700, 3000, 0], [6000, 2700, 1000]];
+pub const ENTRIES: [u64; 3] = [1_000_000, 5_000_000, 10_000_000];
+/// Zero bytes allocated after the serialized Table. Later phases append fields here without
+/// changing the account size; old accounts read the new fields as zero.
+pub const TABLE_RESERVED: usize = 1024;
+pub const TABLE_SPACE: usize = 8 + Table::INIT_SPACE + TABLE_RESERVED;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SpaceKind {
+    Start,
+    City,
+    Lucky,
+    Public,
+    Jail,
+    Auction,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct SpaceSpec {
+    pub kind: SpaceKind,
+    pub group: u8,
+    pub price: i64,
+    pub rent: i64,
+    pub building_cost: i64,
+}
+
+#[account]
+#[derive(InitSpace, Default, Debug, PartialEq)]
+pub struct Table {
+    pub index: u16,
+    pub bump: u8,
+    /// Offset 11 (after the 8-byte discriminator); the free-table finder filters on it.
+    pub phase: TablePhase,
+    /// Increments on every `open_table`; invites and `join_table` bind to it.
+    pub game_nonce: u64,
+    /// Monotonic across games so a late callback can never match a later request.
+    pub vrf_nonce: u64,
+    pub host: Pubkey,
+    pub entry: u64,
+    pub max_players: u8,
+    pub target: u64,
+    pub player_count: u8,
+    pub lobby_deadline: i64,
+    /// Last successful player action; `force_timeout` and VRF callbacks never move it.
+    pub last_action_at: i64,
+    pub stage: Stage,
+    pub stage_deadline: i64,
+    /// Index into `order` of the seat whose turn it is.
+    pub turn: u8,
+    pub order: [u8; MAX_SEATS],
+    pub round: u32,
+    pub rolls_this_turn: u8,
+    pub extra_roll: bool,
+    pub vrf_purpose: VrfPurpose,
+    pub vrf_requested_at: i64,
+    pub last_roll: u8,
+    pub last_card: u8,
+    /// Highest `eliminated_at` used so far; seats eliminated by one instruction share a value.
+    pub elimination_seq: u8,
+    pub ended_at: i64,
+    pub seats: [Seat; MAX_SEATS],
+    pub board: [Lot; SPACES],
+    pub trade: Trade,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Default, Debug, PartialEq, InitSpace)]
+pub struct Seat {
+    pub wallet: Pubkey,
+    pub name: [u8; NAME_LEN],
+    pub refunded: bool,
+    pub cash: i64,
+    pub position: u8,
+    pub jail_turns: u8,
+    pub strikes: u8,
+    /// 0 while active.
+    pub eliminated_at: u8,
+    /// Set by `settle` for the results screen.
+    pub payout: u64,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Debug, PartialEq, InitSpace)]
+pub struct Lot {
+    pub owner: u8,
+    pub buildings: u8,
+}
+
+impl Default for Lot {
+    fn default() -> Self {
+        Self { owner: NO_OWNER, buildings: 0 }
+    }
+}
+
+/// Auction-space trade (phase 04). Reserved in the layout now so phase 04 needs no migration.
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Default, Debug, PartialEq, InitSpace)]
+pub struct Trade {
+    pub space: u8,
+    pub offers: [u8; MAX_SEATS],
+    pub deadline: i64,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Default, PartialEq, Eq, Debug, InitSpace)]
+pub enum TablePhase {
+    #[default]
+    Free,
+    Lobby,
+    Playing,
+    Finished,
+    Refunding,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Default, PartialEq, Eq, Debug, InitSpace)]
+pub enum Stage {
+    #[default]
+    Idle,
+    /// Waiting for the turn-order VRF callback.
+    Ordering,
+    PreRoll,
+    Rolling,
+    BuyDecision,
+    TradeOpen,
+    TradeOffers,
+}
+
+#[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Default, PartialEq, Eq, Debug, InitSpace)]
+pub enum VrfPurpose {
+    #[default]
+    None,
+    Order,
+    Roll,
+}
+
+#[error_code]
+pub enum GameError {
+    #[msg("Entry must be 1, 5, or 10 devnet USDC")]
+    InvalidEntry,
+    #[msg("Players must be 2-4 and the target 3000, 5000 or 7000")]
+    InvalidConfig,
+    #[msg("Name must contain 1 to 16 UTF-8 bytes")]
+    InvalidName,
+    #[msg("Operation is not allowed in this phase")]
+    InvalidPhase,
+    #[msg("Operation is not allowed in this turn stage")]
+    InvalidStage,
+    #[msg("Lobby is closed or expired")]
+    LobbyClosed,
+    #[msg("This invite is for an earlier game at this table")]
+    StaleNonce,
+    #[msg("Table is full")]
+    TableFull,
+    #[msg("Wallet already joined")]
+    AlreadyJoined,
+    #[msg("At least two players are required")]
+    NotEnoughPlayers,
+    #[msg("Unauthorized signer")]
+    Unauthorized,
+    #[msg("Invalid account owner or address")]
+    InvalidAccount,
+    #[msg("Deadline has not passed")]
+    TooEarly,
+    #[msg("Deposit was already refunded")]
+    AlreadyRefunded,
+    #[msg("Arithmetic overflow")]
+    Overflow,
+    #[msg("Invalid or repeated VRF callback")]
+    UnexpectedRandomness,
+    #[msg("Not enough cash")]
+    InsufficientCash,
+    #[msg("Table custody does not hold the pot")]
+    CustodyShort,
+    #[msg("Table custody must be empty after settlement")]
+    CustodyNotEmpty,
+}
