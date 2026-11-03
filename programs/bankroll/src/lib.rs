@@ -34,6 +34,8 @@ pub mod bankroll {
         let table = &mut ctx.accounts.table;
         table.index = index;
         table.bump = ctx.bumps.table;
+        // `init` zeroes the account, which would read as seat 0 owning every space.
+        table.board = [Lot::default(); board::SPACES];
         Ok(())
     }
 
@@ -131,13 +133,17 @@ pub mod bankroll {
         Ok(())
     }
 
+    /// Rolls (or re-requests a missing roll). A jailed seat's roll serves a jail turn and needs no
+    /// randomness, so it sends no VRF request.
     pub fn roll(mut ctx: Context<RequestRandomness>) -> Result<()> {
         let accounts = &mut ctx.accounts;
-        accounts
+        let needs_randomness = accounts
             .table
             .roll(accounts.payer.key(), Clock::get()?.unix_timestamp)?;
-        let ix = vrf_request(accounts.payer.key(), &accounts.table);
-        accounts.invoke_signed_vrf(&accounts.payer.to_account_info(), &ix)?;
+        if needs_randomness {
+            let ix = vrf_request(accounts.payer.key(), &accounts.table);
+            accounts.invoke_signed_vrf(&accounts.payer.to_account_info(), &ix)?;
+        }
         Ok(())
     }
 
@@ -163,6 +169,24 @@ pub mod bankroll {
         ctx.accounts
             .table
             .pass(ctx.accounts.signer.key(), Clock::get()?.unix_timestamp)
+    }
+
+    pub fn build(ctx: Context<TableAction>, space: u8) -> Result<()> {
+        ctx.accounts
+            .table
+            .build(ctx.accounts.signer.key(), space, Clock::get()?.unix_timestamp)
+    }
+
+    pub fn sell(ctx: Context<TableAction>, space: u8) -> Result<()> {
+        ctx.accounts
+            .table
+            .sell(ctx.accounts.signer.key(), space, Clock::get()?.unix_timestamp)
+    }
+
+    pub fn pay_bail(ctx: Context<TableAction>) -> Result<()> {
+        ctx.accounts
+            .table
+            .pay_bail(ctx.accounts.signer.key(), Clock::get()?.unix_timestamp)
     }
 
     pub fn force_timeout(ctx: Context<TableAction>) -> Result<()> {
@@ -431,5 +455,7 @@ pub struct Settle<'info> {
     pub token_program: Program<'info, Token>,
 }
 
+#[cfg(test)]
+mod fuzz;
 #[cfg(test)]
 mod tests;

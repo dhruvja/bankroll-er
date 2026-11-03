@@ -37,6 +37,26 @@ pub struct SpaceSpec {
     pub building_cost: i64,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum LuckyKind {
+    /// Collect (positive) or pay (negative) `amount` from the bank.
+    Bank,
+    PayEach,
+    CollectEach,
+    ToStart,
+    ToJail,
+    /// Move `amount` spaces; negative moves back and never pays salary.
+    Move,
+    /// Pay `amount` per building owned.
+    Repairs,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct LuckyCard {
+    pub kind: LuckyKind,
+    pub amount: i64,
+}
+
 #[account]
 #[derive(InitSpace, Default, Debug, PartialEq)]
 pub struct Table {
@@ -67,6 +87,7 @@ pub struct Table {
     pub vrf_purpose: VrfPurpose,
     pub vrf_requested_at: i64,
     pub last_roll: u8,
+    /// Lucky card drawn by the latest roll, 1-12 as in `economy.md`; 0 when none was drawn.
     pub last_card: u8,
     /// Highest `eliminated_at` used so far; seats eliminated by one instruction share a value.
     pub elimination_seq: u8,
@@ -182,4 +203,10 @@ pub enum GameError {
     CustodyShort,
     #[msg("Table custody must be empty after settlement")]
     CustodyNotEmpty,
+    #[msg("You do not own this property")]
+    NotYourProperty,
+    #[msg("Build needs a city in a full group with fewer than 3 buildings")]
+    CannotBuild,
+    #[msg("Only a jailed player can pay bail")]
+    NotJailed,
 }

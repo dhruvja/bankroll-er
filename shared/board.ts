@@ -2,6 +2,8 @@ import boardJson from './board.json';
 
 export type SpaceKindName = 'start' | 'city' | 'lucky' | 'public' | 'jail' | 'auction';
 export interface BoardSpace { index: number; name: string; kind: SpaceKindName; group?: string; price?: number; rent?: number; buildingCost?: number }
+export type LuckyKind = 'bank' | 'pay_each' | 'collect_each' | 'to_start' | 'to_jail' | 'move' | 'repairs';
+export interface LuckyCard { id: number; kind: LuckyKind; amount: number; text: string }
 export interface Board {
   version: number; status: string;
   spaces: BoardSpace[];
@@ -9,11 +11,13 @@ export interface Board {
   publics: number[];
   rules: {
     startCash: number; salary: number; bankruptCashBelow: number; maxRollsPerTurn: number;
+    jailSpace: number; jailTurns: number; bail: number; saleBps: number; maxBuildingsPerCity: number; tradeBonus: number;
     groupRentMultiplier: number; buildingRentMultipliers: number[]; targets: number[];
     seatBonusStepByTarget: Record<string, number>; defaultTargetByPlayers: Record<string, number>;
     deadlinesSec: { preRoll: number; buyDecision: number; vrfRetry: number; idle: number; emergencyRefundAfterIdle: number };
     strikesToForfeit: number;
   };
+  luckyDeck: LuckyCard[];
 }
 
 /** Phase 01 frozen economy (sha256 d9fa832e…, checked by tests/ts/board.test.ts). */

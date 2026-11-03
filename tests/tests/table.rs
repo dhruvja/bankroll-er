@@ -1,7 +1,8 @@
 //! Runs the production SBF (`target/deploy/bankroll.so`, build G2 first) with real SPL Token CPIs.
 //! Delegation records, ER account ownership, eATA custody and the VRF identity signature are
-//! fixtures; LiteSVM cannot run the VRF program, so callbacks are delivered by the scoped identity
-//! with signature verification disabled.
+//! fixtures. Requests run against the real VRF program (`tests/fixtures/vrf_program.so`, dumped
+//! from devnet) and a copy of the ER queue (`tests/fixtures/ephemeral_queue.bin`); no oracle runs
+//! here, so callbacks are delivered by the scoped identity with signature verification disabled.
 use anchor_lang::{
     prelude::AccountMeta, AccountDeserialize, AccountSerialize, InstructionData, Space,
     ToAccountMetas,
@@ -92,6 +93,10 @@ impl Harness {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
         svm.add_program_from_file(bankroll::ID, root.join("target/deploy/bankroll.so"))
             .expect("build the production SBF first (gate G2)");
+        svm.add_program_from_file(ephemeral_vrf_sdk::consts::VRF_PROGRAM_ID, root.join("tests/fixtures/vrf_program.so"))
+            .unwrap();
+        let queue = std::fs::read(root.join("tests/fixtures/ephemeral_queue.bin")).unwrap();
+        set_data(&mut svm, ephemeral_vrf_sdk::consts::DEFAULT_EPHEMERAL_QUEUE, ephemeral_vrf_sdk::consts::VRF_PROGRAM_ID, queue);
         let payer = Keypair::new();
         svm.airdrop(&payer.pubkey(), 10_000_000_000).unwrap();
         let (table, bump) = Address::find_program_address(&[TABLE_SEED, &7u16.to_le_bytes()], &bankroll::ID);
@@ -174,6 +179,25 @@ impl Harness {
         let signer = self.players[seat].insecure_clone();
         let action = ix(bankroll::accounts::TableAction { signer: signer.pubkey(), table: self.table }, data);
         self.send(&[&signer], action)
+    }
+    fn roll_ix(&self, seat: usize) -> Instruction {
+        ix(
+            bankroll::accounts::RequestRandomness {
+                payer: self.wallet(seat),
+                table: self.table,
+                oracle_queue: ephemeral_vrf_sdk::consts::DEFAULT_EPHEMERAL_QUEUE,
+                program_identity: Address::find_program_address(&[b"identity"], &bankroll::ID).0,
+                vrf_program: ephemeral_vrf_sdk::consts::VRF_PROGRAM_ID,
+                slot_hashes: ephemeral_vrf_sdk::compat::slot_hashes::ID,
+                system_program: Address::default(),
+            },
+            bankroll::instruction::Roll {},
+        )
+    }
+    fn roll(&mut self, seat: usize) -> Result<TransactionMetadata, FailedTransactionMetadata> {
+        let signer = self.players[seat].insecure_clone();
+        let roll = self.roll_ix(seat);
+        self.send(&[&signer], roll)
     }
     fn settle_ix(&self) -> Instruction {
         let mut instruction = ix(
@@ -442,6 +466,10 @@ fn spoofed_or_stale_vrf_callbacks_are_rejected_and_the_genuine_one_drives_play()
         bankroll::instruction::Roll {},
     );
     let host = h.players[0].insecure_clone();
+    let queue = ephemeral_vrf_sdk::consts::DEFAULT_EPHEMERAL_QUEUE;
+    let mut account = h.svm.get_account(&queue).unwrap();
+    account.owner = Address::default();
+    h.svm.set_account(queue, account).unwrap();
     let before = h.snapshot();
     assert!(h.send(&[&host], roll).is_err(), "the oracle queue must be VRF-owned on the ER");
     assert_eq!(before, h.snapshot());
@@ -578,4 +606,137 @@ fn a_losing_seat_cannot_block_settle_by_closing_its_token_accounts() {
     assert_eq!(balance(&h.svm, h.treasury), 60_000);
     assert_eq!(balance(&h.svm, h.table), 0);
     assert_eq!(h.read().phase, TablePhase::Free);
+}
+
+/// Randomness that rolls `value` and, on a Lucky space, draws card `card` (1-12), matching the
+/// program's `sha256(r, "card") % 12`.
+fn die_and_card(value: u8, card: u8) -> [u8; 32] {
+    let mut randomness = die(value);
+    for counter in 0u64.. {
+        randomness[8..16].copy_from_slice(&counter.to_le_bytes());
+        let hash = solana_sha256_hasher::hashv(&[&randomness, b"card"]).to_bytes();
+        if u64::from_le_bytes(hash[..8].try_into().unwrap()) % 12 == card as u64 - 1 {
+            return randomness;
+        }
+    }
+    unreachable!()
+}
+
+#[test]
+fn a_late_callback_after_a_vrf_re_request_fails_and_a_jailed_roll_skips_the_oracle() {
+    let mut h = Harness::new();
+    h.playing(2, 7000);
+    let result = h.roll(0).unwrap();
+    eprintln!("roll request CU {}", result.compute_units_consumed);
+    let first = h.read();
+    assert_eq!((first.stage, first.vrf_purpose), (Stage::Rolling, VrfPurpose::Roll));
+    assert_eq!(h.svm.get_balance(&h.wallet(0)).unwrap_or(0), 0, "the zero-SOL roller paid nothing");
+
+    h.clock(T0 + 14);
+    let before = h.snapshot();
+    assert!(h.roll(0).is_err(), "no re-request before the VRF timeout");
+    assert_eq!(before, h.snapshot());
+    h.clock(T0 + 15);
+    h.roll(0).unwrap();
+    let retried = h.read();
+    assert_eq!(retried.vrf_nonce, first.vrf_nonce + 1, "the re-request bumps the nonce");
+    let before = h.snapshot();
+    assert!(h.callback(scoped_identity(), die(1), first.vrf_nonce).is_err(), "late callback for the voided request");
+    assert_eq!(before, h.snapshot());
+    h.callback(scoped_identity(), die(1), retried.vrf_nonce).unwrap();
+    assert_eq!((h.read().seats[0].position, h.read().stage), (1, Stage::BuyDecision));
+    h.action(0, bankroll::instruction::Pass {}).unwrap();
+
+    // Seat 1 is jailed: its roll serves the turn and sends no VRF request.
+    let mut table = h.read();
+    table.seats[1].jail_turns = 2;
+    table.seats[1].position = 6;
+    h.write(&table);
+    let queue = h.svm.get_account(&ephemeral_vrf_sdk::consts::DEFAULT_EPHEMERAL_QUEUE).unwrap().data;
+    h.roll(1).unwrap();
+    let table = h.read();
+    assert_eq!((table.seats[1].jail_turns, table.seats[1].position, table.turn), (1, 6, 0));
+    assert_eq!((table.vrf_nonce, table.vrf_purpose), (retried.vrf_nonce, VrfPurpose::None));
+    assert_eq!(queue, h.svm.get_account(&ephemeral_vrf_sdk::consts::DEFAULT_EPHEMERAL_QUEUE).unwrap().data, "no request queued");
+}
+
+#[test]
+fn bankruptcy_and_forfeit_rank_through_settle() {
+    let mut h = Harness::new();
+    h.playing(4, 7000);
+    // Seat 0 lands on seat 1's full-Gold Tokyo with 3 buildings ($352) holding $100: bankrupt.
+    let mut table = h.read();
+    table.board[21].owner = 1;
+    table.board[21].buildings = 3;
+    table.board[23].owner = 1;
+    table.board[1].owner = 0;
+    table.seats[0].cash = 100;
+    table.seats[0].position = 18;
+    table.seats[3].strikes = 2;
+    h.write(&table);
+    h.roll(0).unwrap();
+    h.callback(scoped_identity(), die(3), h.read().vrf_nonce).unwrap();
+    let table = h.read();
+    assert_eq!((table.seats[0].eliminated_at, table.board[1].owner, table.turn), (1, NO_OWNER, 1));
+    assert_eq!(table.seats[1].cash, 2000 + 352);
+
+    // Seats 1 and 2 time out once; seat 3's third strike forfeits it.
+    for _ in 0..3 {
+        let deadline = h.read().stage_deadline;
+        h.clock(deadline);
+        h.action(1, bankroll::instruction::ForceTimeout {}).unwrap();
+    }
+    let table = h.read();
+    assert_eq!((table.seats[3].eliminated_at, table.elimination_seq, table.phase), (2, 2, TablePhase::Playing));
+
+    // Nobody acts for an hour: the game ends by ranking.
+    h.clock(table.last_action_at + 3600);
+    h.action(2, bankroll::instruction::ForceTimeout {}).unwrap();
+    assert_eq!(h.read().phase, TablePhase::Finished);
+    let settle = h.settle_ix();
+    h.send(&[], settle).unwrap();
+    // 4 seats, pot 4.00: 60/27/10. Active seats by net worth, then the later elimination.
+    for (seat, expected) in [(1, 2_400_000), (2, 1_080_000), (3, 400_000), (0, 0)] {
+        assert_eq!(balance(&h.svm, h.wallet(seat)), expected, "seat {seat}");
+    }
+    assert_eq!(balance(&h.svm, h.treasury), 120_000);
+    assert_eq!(balance(&h.svm, h.table), 0);
+    assert_eq!(h.read().phase, TablePhase::Free);
+}
+
+#[test]
+fn the_worst_case_roll_callback_fits_the_vrf_callback_budget() {
+    // A 6 lands on Lucky 18 and every card is drawn in turn. Card 10 is the phase 03 worst case:
+    // it moves seat 0 onto seat 1's full-Gold Tokyo with 3 buildings ($352), which takes it below
+    // -$500 and releases seven holdings. Three seats remain, so every end condition is evaluated.
+    let mut worst = 0;
+    for card in 1..=12u8 {
+        let mut h = Harness::new();
+        h.playing(4, 7000);
+        let mut table = h.read();
+        table.board[21] = bankroll::Lot { owner: 1, buildings: 3 };
+        table.board[23] = bankroll::Lot { owner: 1, buildings: 3 };
+        for space in [1usize, 2, 5, 7, 8, 11, 13] {
+            table.board[space] = bankroll::Lot { owner: 0, buildings: if space == 1 || space == 2 { 3 } else { 0 } };
+        }
+        for space in [14usize, 17, 19, 20] {
+            table.board[space] = bankroll::Lot { owner: 2, buildings: 2 };
+        }
+        table.seats[0].cash = -400;
+        table.seats[0].position = 12;
+        table.stage = Stage::Rolling;
+        table.vrf_purpose = VrfPurpose::Roll;
+        h.write(&table);
+        let result = h.callback(scoped_identity(), die_and_card(6, card), table.vrf_nonce).unwrap();
+        let after = h.read();
+        eprintln!("card {card}: consume_randomness CU {}", result.compute_units_consumed);
+        if card == 10 {
+            assert_eq!((after.seats[0].position, after.seats[0].eliminated_at), (21, 1), "bankrupt on Tokyo rent");
+            assert!(after.board.iter().all(|lot| lot.owner != 0));
+            assert_eq!(after.turn, 1);
+        }
+        worst = worst.max(result.compute_units_consumed);
+    }
+    eprintln!("worst consume_randomness CU {worst} (budget 200,000; VRF callback cap ~272,000)");
+    assert!(worst < 200_000, "worst-case callback CU {worst}");
 }

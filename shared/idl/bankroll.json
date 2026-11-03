@@ -7,6 +7,57 @@
   },
   "instructions": [
     {
+      "name": "build",
+      "discriminator": [
+        185,
+        78,
+        176,
+        79,
+        189,
+        139,
+        56,
+        25
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "signer": true
+        },
+        {
+          "name": "table",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  98,
+                  108,
+                  101,
+                  95,
+                  118,
+                  49
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "table.index",
+                "account": "Table"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "space",
+          "type": "u8"
+        }
+      ]
+    },
+    {
       "name": "buy",
       "discriminator": [
         102,
@@ -669,6 +720,52 @@
       "args": []
     },
     {
+      "name": "pay_bail",
+      "discriminator": [
+        134,
+        85,
+        99,
+        77,
+        16,
+        42,
+        43,
+        74
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "signer": true
+        },
+        {
+          "name": "table",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  98,
+                  108,
+                  101,
+                  95,
+                  118,
+                  49
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "table.index",
+                "account": "Table"
+              }
+            ]
+          }
+        }
+      ],
+      "args": []
+    },
+    {
       "name": "refund_player",
       "docs": [
         "Returns one seat's money from a Refunding table: the full entry with no fee, or the ranked",
@@ -746,6 +843,10 @@
     },
     {
       "name": "roll",
+      "docs": [
+        "Rolls (or re-requests a missing roll). A jailed seat's roll serves a jail turn and needs no",
+        "randomness, so it sends no VRF request."
+      ],
       "discriminator": [
         143,
         143,
@@ -827,6 +928,57 @@
         }
       ],
       "args": []
+    },
+    {
+      "name": "sell",
+      "discriminator": [
+        51,
+        230,
+        133,
+        164,
+        1,
+        127,
+        131,
+        173
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "signer": true
+        },
+        {
+          "name": "table",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  98,
+                  108,
+                  101,
+                  95,
+                  118,
+                  49
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "table.index",
+                "account": "Table"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "space",
+          "type": "u8"
+        }
+      ]
     },
     {
       "name": "settle",
@@ -1092,6 +1244,21 @@
       "code": 6018,
       "name": "CustodyNotEmpty",
       "msg": "Table custody must be empty after settlement"
+    },
+    {
+      "code": 6019,
+      "name": "NotYourProperty",
+      "msg": "You do not own this property"
+    },
+    {
+      "code": 6020,
+      "name": "CannotBuild",
+      "msg": "Build needs a city in a full group with fewer than 3 buildings"
+    },
+    {
+      "code": 6021,
+      "name": "NotJailed",
+      "msg": "Only a jailed player can pay bail"
     }
   ],
   "types": [
@@ -1322,6 +1489,9 @@
           },
           {
             "name": "last_card",
+            "docs": [
+              "Lucky card drawn by the latest roll, 1-12 as in `economy.md`; 0 when none was drawn."
+            ],
             "type": "u8"
           },
           {

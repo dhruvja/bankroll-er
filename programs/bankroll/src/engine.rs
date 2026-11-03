@@ -59,6 +59,15 @@ impl Table {
         self.seats[seat].cash + holdings
     }
 
+    /// Whether `seat` owns every city in `group`.
+    pub fn owns_group(&self, seat: usize, group: u8) -> bool {
+        self.board
+            .iter()
+            .zip(BOARD.iter())
+            .filter(|(_, space)| space.kind == SpaceKind::City && space.group == group)
+            .all(|(lot, _)| lot.owner as usize == seat)
+    }
+
     pub fn rent(&self, space: usize) -> i64 {
         let owner = self.board[space].owner;
         let spec = BOARD[space];
@@ -182,8 +191,6 @@ impl Table {
                 require!(caller == self.host, GameError::Unauthorized);
                 require!(now < self.lobby_deadline, GameError::LobbyClosed);
                 require!(self.player_count >= 2, GameError::NotEnoughPlayers);
-                self.phase = TablePhase::Playing;
-                self.stage = Stage::Ordering;
             }
             (TablePhase::Playing, Stage::Ordering) => {
                 require!(self.seat_of(&caller).is_some(), GameError::Unauthorized);
@@ -195,17 +202,29 @@ impl Table {
             _ => return err!(GameError::InvalidPhase),
         }
         self.request_vrf(VrfPurpose::Order, now)?;
+        self.phase = TablePhase::Playing;
+        self.stage = Stage::Ordering;
         self.last_action_at = now;
         Ok(())
     }
 
     /// The current seat rolls, or re-requests a roll whose callback never came. Other active seats
     /// may retry only after a longer wait, so they cannot void a slow but valid roll in flight.
-    pub fn roll(&mut self, caller: Pubkey, now: i64) -> Result<()> {
+    /// A jailed seat's roll serves one jail turn without moving. Returns whether a VRF request is
+    /// needed; the jailed roll needs none.
+    pub fn roll(&mut self, caller: Pubkey, now: i64) -> Result<bool> {
         require!(self.phase == TablePhase::Playing, GameError::InvalidPhase);
         let seat = self.seat_of(&caller).ok_or(GameError::Unauthorized)?;
         match self.stage {
-            Stage::PreRoll => require!(seat == self.current_seat(), GameError::Unauthorized),
+            Stage::PreRoll => {
+                require!(seat == self.current_seat(), GameError::Unauthorized);
+                if self.seats[seat].jail_turns > 0 {
+                    self.seats[seat].jail_turns -= 1;
+                    self.last_action_at = now;
+                    self.advance_turn(now);
+                    return Ok(false);
+                }
+            }
             Stage::Rolling => {
                 require!(self.is_active(seat), GameError::Unauthorized);
                 let wait = if seat == self.current_seat() {
@@ -217,10 +236,10 @@ impl Table {
             }
             _ => return err!(GameError::InvalidStage),
         }
-        self.stage = Stage::Rolling;
         self.request_vrf(VrfPurpose::Roll, now)?;
+        self.stage = Stage::Rolling;
         self.last_action_at = now;
-        Ok(())
+        Ok(true)
     }
 
     fn request_vrf(&mut self, purpose: VrfPurpose, now: i64) -> Result<()> {
@@ -230,84 +249,164 @@ impl Table {
         Ok(())
     }
 
-    /// The VRF callback. The 32-byte output is consumed here and never stored.
+    /// The VRF callback. The 32-byte output is consumed here and never stored: it yields the die
+    /// and, on a Lucky space, the one card this roll may draw.
     pub fn consume_randomness(&mut self, randomness: [u8; 32], nonce: u64, now: i64) -> Result<()> {
+        let expected_stage = match self.vrf_purpose {
+            VrfPurpose::Order => Stage::Ordering,
+            VrfPurpose::Roll => Stage::Rolling,
+            VrfPurpose::None => return err!(GameError::UnexpectedRandomness),
+        };
         require!(
             self.phase == TablePhase::Playing
-                && self.vrf_purpose != VrfPurpose::None
+                && self.stage == expected_stage
                 && nonce == self.vrf_nonce,
             GameError::UnexpectedRandomness
         );
-        let purpose = self.vrf_purpose;
-        self.vrf_purpose = VrfPurpose::None;
         let n = self.count();
-        match purpose {
-            VrfPurpose::Order => {
-                require!(self.stage == Stage::Ordering, GameError::UnexpectedRandomness);
-                let mut order = [0u8, 1, 2, 3];
-                for i in (1..n).rev() {
-                    let hash = solana_sha256_hasher::hashv(&[b"order", &randomness, &[i as u8]]);
-                    let j = (word(&hash.to_bytes()) % (i as u64 + 1)) as usize;
-                    order.swap(i, j);
-                }
-                let step_index = TARGETS
-                    .iter()
-                    .position(|target| *target == self.target)
-                    .ok_or(GameError::InvalidConfig)?;
-                for (place, &seat) in order[..n].iter().enumerate() {
-                    self.seats[seat as usize].cash =
-                        START_CASH + SEAT_BONUS_STEPS[step_index] * place as i64;
-                }
-                self.order = order;
-                self.turn = 0;
-                self.round = 1;
-                self.begin_turn(now);
+        if self.vrf_purpose == VrfPurpose::Order {
+            let step_index = TARGETS
+                .iter()
+                .position(|target| *target == self.target)
+                .ok_or(GameError::InvalidConfig)?;
+            let mut order = [0u8, 1, 2, 3];
+            for i in (1..n).rev() {
+                let hash = solana_sha256_hasher::hashv(&[b"order", &randomness, &[i as u8]]);
+                let j = (word(&hash.to_bytes()) % (i as u64 + 1)) as usize;
+                order.swap(i, j);
             }
-            VrfPurpose::Roll => {
-                require!(self.stage == Stage::Rolling, GameError::UnexpectedRandomness);
-                let seat = self.current_seat();
-                let die = (word(&randomness) % 6) as u8 + 1;
-                self.last_roll = die;
-                self.rolls_this_turn += 1;
-                self.extra_roll = die == 6 && self.rolls_this_turn < MAX_ROLLS_PER_TURN;
-                let to = self.seats[seat].position as usize + die as usize;
-                if to >= SPACES {
-                    self.seats[seat].cash += SALARY;
-                }
-                let position = to % SPACES;
-                self.seats[seat].position = position as u8;
-                let space = BOARD[position];
-                let owner = self.board[position].owner;
-                let mut buying = false;
-                if matches!(space.kind, SpaceKind::City | SpaceKind::Public) {
-                    if owner == NO_OWNER {
-                        buying = self.seats[seat].cash >= space.price;
-                    } else if owner as usize != seat {
-                        // Rent is paid in full even when it pushes the payer below zero.
-                        let rent = self.rent(position);
-                        self.seats[seat].cash -= rent;
-                        self.seats[owner as usize].cash += rent;
-                        if self.net_worth(seat) <= 0 || self.seats[seat].cash < BANKRUPT_CASH_BELOW
-                        {
-                            self.eliminate(seat);
-                        }
-                    }
-                }
-                if buying {
-                    self.stage = Stage::BuyDecision;
-                    self.stage_deadline = now + BUY_SECONDS;
-                } else {
-                    self.finish_roll(now);
-                }
+            for (place, &seat) in order[..n].iter().enumerate() {
+                self.seats[seat as usize].cash =
+                    START_CASH + SEAT_BONUS_STEPS[step_index] * place as i64;
             }
-            VrfPurpose::None => return err!(GameError::UnexpectedRandomness),
+            self.vrf_purpose = VrfPurpose::None;
+            self.order = order;
+            self.turn = 0;
+            self.round = 1;
+            self.begin_turn(now);
+            return Ok(());
+        }
+
+        self.vrf_purpose = VrfPurpose::None;
+        let seat = self.current_seat();
+        let die = (word(&randomness) % 6) as u8 + 1;
+        self.last_roll = die;
+        self.last_card = 0;
+        self.rolls_this_turn += 1;
+        self.extra_roll = die == 6 && self.rolls_this_turn < MAX_ROLLS_PER_TURN;
+        let to = self.seats[seat].position as usize + die as usize;
+        if to >= SPACES {
+            self.seats[seat].cash += SALARY;
+        }
+        let buying = self.land(seat, to % SPACES, Some(&randomness));
+        if self.seats[seat].jail_turns > 0 {
+            // Landing on Jail, by roll or card, ends the turn and cancels any extra roll.
+            self.extra_roll = false;
+        }
+        if buying && self.is_active(seat) {
+            self.stage = Stage::BuyDecision;
+            self.stage_deadline = now + BUY_SECONDS;
+        } else {
+            self.finish_roll(now);
         }
         self.check_end(now);
         Ok(())
     }
 
+    /// Puts `seat` on `position` and resolves the space: jail, a Lucky card (only when
+    /// `randomness` is given, so a card move never draws again), rent or a buy offer. Returns
+    /// whether the seat may buy the unowned property it landed on.
+    fn land(&mut self, seat: usize, position: usize, randomness: Option<&[u8; 32]>) -> bool {
+        self.seats[seat].position = position as u8;
+        let space = BOARD[position];
+        match space.kind {
+            SpaceKind::Jail => {
+                self.seats[seat].jail_turns = JAIL_TURNS;
+                false
+            }
+            SpaceKind::Lucky => match randomness {
+                Some(randomness) => self.draw(seat, randomness),
+                None => false,
+            },
+            SpaceKind::City | SpaceKind::Public => {
+                let owner = self.board[position].owner;
+                if owner == NO_OWNER {
+                    return self.seats[seat].cash >= space.price;
+                }
+                if owner as usize != seat {
+                    // Rent is paid in full even when it pushes the payer below zero.
+                    let rent = self.rent(position);
+                    self.seats[seat].cash -= rent;
+                    self.seats[owner as usize].cash += rent;
+                    self.eliminate_if_bankrupt(seat);
+                }
+                false
+            }
+            SpaceKind::Start | SpaceKind::Auction => false,
+        }
+    }
+
+    /// Draws `sha256(r, "card") % 12` and applies it. Returns whether a move card left the seat
+    /// on a property it may buy.
+    fn draw(&mut self, seat: usize, randomness: &[u8; 32]) -> bool {
+        let hash = solana_sha256_hasher::hashv(&[randomness, b"card"]);
+        let index = (word(&hash.to_bytes()) % LUCKY_DECK.len() as u64) as usize;
+        self.last_card = index as u8 + 1;
+        let card = LUCKY_DECK[index];
+        let n = self.count();
+        match card.kind {
+            LuckyKind::Bank => {
+                self.seats[seat].cash += card.amount;
+                self.eliminate_if_bankrupt(seat);
+            }
+            LuckyKind::PayEach => {
+                for other in (0..n).filter(|&other| other != seat) {
+                    if self.is_active(other) {
+                        self.seats[other].cash += card.amount;
+                        self.seats[seat].cash -= card.amount;
+                    }
+                }
+                self.eliminate_if_bankrupt(seat);
+            }
+            LuckyKind::CollectEach => {
+                // Each payer settles in full; several can go bankrupt in this one callback.
+                for other in (0..n).filter(|&other| other != seat) {
+                    if self.is_active(other) {
+                        self.seats[other].cash -= card.amount;
+                        self.seats[seat].cash += card.amount;
+                        self.eliminate_if_bankrupt(other);
+                    }
+                }
+            }
+            LuckyKind::ToStart => {
+                self.seats[seat].cash += SALARY;
+                return self.land(seat, 0, None);
+            }
+            LuckyKind::ToJail => return self.land(seat, JAIL_SPACE, None),
+            LuckyKind::Move => {
+                let from = self.seats[seat].position as i64;
+                let to = from + card.amount;
+                if to >= SPACES as i64 {
+                    self.seats[seat].cash += SALARY;
+                }
+                return self.land(seat, to.rem_euclid(SPACES as i64) as usize, None);
+            }
+            LuckyKind::Repairs => {
+                let buildings: i64 = self
+                    .board
+                    .iter()
+                    .filter(|lot| lot.owner as usize == seat)
+                    .map(|lot| lot.buildings as i64)
+                    .sum();
+                self.seats[seat].cash -= card.amount * buildings;
+                self.eliminate_if_bankrupt(seat);
+            }
+        }
+        false
+    }
+
     pub fn buy(&mut self, caller: Pubkey, now: i64) -> Result<()> {
-        let seat = self.decision_seat(caller)?;
+        let seat = self.acting_seat(caller, &[Stage::BuyDecision])?;
         let position = self.seats[seat].position as usize;
         let price = BOARD[position].price;
         require!(
@@ -325,16 +424,80 @@ impl Table {
     }
 
     pub fn pass(&mut self, caller: Pubkey, now: i64) -> Result<()> {
-        self.decision_seat(caller)?;
+        self.acting_seat(caller, &[Stage::BuyDecision])?;
         self.last_action_at = now;
         self.finish_roll(now);
         self.check_end(now);
         Ok(())
     }
 
-    fn decision_seat(&self, caller: Pubkey) -> Result<usize> {
+    /// Adds one building to a city of a full group the current seat owns, in its PreRoll.
+    pub fn build(&mut self, caller: Pubkey, space: u8, now: i64) -> Result<()> {
+        let seat = self.acting_seat(caller, &[Stage::PreRoll])?;
+        let space = space as usize;
+        require!(space < SPACES, GameError::NotYourProperty);
+        let spec = BOARD[space];
         require!(
-            self.phase == TablePhase::Playing && self.stage == Stage::BuyDecision,
+            self.board[space].owner as usize == seat,
+            GameError::NotYourProperty
+        );
+        require!(
+            spec.kind == SpaceKind::City
+                && self.owns_group(seat, spec.group)
+                && self.board[space].buildings < MAX_BUILDINGS,
+            GameError::CannotBuild
+        );
+        require!(
+            self.seats[seat].cash >= spec.building_cost,
+            GameError::InsufficientCash
+        );
+        self.seats[seat].cash -= spec.building_cost;
+        self.board[space].buildings += 1;
+        self.last_action_at = now;
+        self.check_end(now);
+        Ok(())
+    }
+
+    /// Sells a property with its buildings for 80% of their price, in the current seat's PreRoll
+    /// or BuyDecision. A sale that bankrupts the seller ends its turn.
+    pub fn sell(&mut self, caller: Pubkey, space: u8, now: i64) -> Result<()> {
+        let seat = self.acting_seat(caller, &[Stage::PreRoll, Stage::BuyDecision])?;
+        let space = space as usize;
+        require!(
+            space < SPACES && self.board[space].owner as usize == seat,
+            GameError::NotYourProperty
+        );
+        let spec = BOARD[space];
+        let value = spec.price + self.board[space].buildings as i64 * spec.building_cost;
+        self.seats[seat].cash += value * SALE_BPS / 10_000;
+        self.board[space] = Lot::default();
+        self.eliminate_if_bankrupt(seat);
+        self.last_action_at = now;
+        if !self.is_active(seat) {
+            self.advance_turn(now);
+        }
+        self.check_end(now);
+        Ok(())
+    }
+
+    /// A jailed seat pays $150 in its PreRoll and is released; the turn ends without moving.
+    pub fn pay_bail(&mut self, caller: Pubkey, now: i64) -> Result<()> {
+        let seat = self.acting_seat(caller, &[Stage::PreRoll])?;
+        require!(self.seats[seat].jail_turns > 0, GameError::NotJailed);
+        require!(self.seats[seat].cash >= BAIL, GameError::InsufficientCash);
+        self.seats[seat].cash -= BAIL;
+        self.seats[seat].jail_turns = 0;
+        self.eliminate_if_bankrupt(seat);
+        self.last_action_at = now;
+        self.advance_turn(now);
+        self.check_end(now);
+        Ok(())
+    }
+
+    /// The current seat, when `caller` holds it and the turn is in one of `stages`.
+    fn acting_seat(&self, caller: Pubkey, stages: &[Stage]) -> Result<usize> {
+        require!(
+            self.phase == TablePhase::Playing && stages.contains(&self.stage),
             GameError::InvalidStage
         );
         let seat = self.current_seat();
@@ -369,9 +532,12 @@ impl Table {
                 if matches!(self.stage, Stage::PreRoll | Stage::BuyDecision)
                     && now >= self.stage_deadline =>
             {
-                // A timed-out PreRoll skips the turn; a timed-out BuyDecision passes and the turn
-                // ends, including any extra roll from a 6.
+                // A timed-out PreRoll skips the turn (a jailed seat serves that turn); a timed-out
+                // BuyDecision passes and the turn ends, including any extra roll from a 6.
                 let seat = self.current_seat();
+                if self.stage == Stage::PreRoll && self.seats[seat].jail_turns > 0 {
+                    self.seats[seat].jail_turns -= 1;
+                }
                 self.seats[seat].strikes += 1;
                 if self.seats[seat].strikes >= STRIKES_TO_FORFEIT {
                     self.eliminate(seat);
@@ -458,6 +624,16 @@ impl Table {
         }
         self.turn = turn as u8;
         self.begin_turn(now);
+    }
+
+    /// The bankruptcy check run after every cash decrease: net worth at or below 0, or cash below
+    /// -$500, eliminates the seat.
+    fn eliminate_if_bankrupt(&mut self, seat: usize) {
+        if self.is_active(seat)
+            && (self.net_worth(seat) <= 0 || self.seats[seat].cash < BANKRUPT_CASH_BELOW)
+        {
+            self.eliminate(seat);
+        }
     }
 
     /// Eliminated seats share `elimination_seq + 1` until `check_end` closes the instruction.
