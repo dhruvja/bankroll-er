@@ -1,0 +1,29 @@
+[package]
+name = "bankroll-runtime-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dev-dependencies]
+anchor-lang = "=1.2.0"
+litesvm = "=0.16.0"
+solana-account = "=4.3.2"
+solana-address = "=2.6.1"
+solana-clock = "=3.1.1"
+solana-instruction = "=3.4.1"
+solana-keypair = "=3.1.2"
+solana-program-pack = "=3.1.0"
+solana-signer = "=3.0.1"
+solana-transaction = "=4.1.6"
+spl-token-interface = "=3.0.0"
+bankroll = { path = "../programs/bankroll", features = ["no-entrypoint"] }
+ephemeral-rollups-sdk = { version = "=0.17.2", features = ["anchor"] }
+ephemeral-vrf-sdk = { version = "=0.17.2", features = ["anchor"] }
+
+[profile.release]
+overflow-checks = true
+
+[lints.clippy]
+result_large_err = "allow"
