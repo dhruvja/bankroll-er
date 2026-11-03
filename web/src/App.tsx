@@ -2,8 +2,8 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import type { Keypair } from '@solana/web3.js';
 import { board, defaultTarget, isProperty } from '../../shared/board';
 import { ENTRIES, PROTOCOL_FEE_BPS, RELAY_FEE, TOKEN_SCALE, WITHDRAW_MINIMUM } from '../../shared/config';
-import { NO_OWNER, currentSeat, expectedPayouts, netWorth, type TableView } from '../../shared/chain';
-import { act, deposit, getWalletInfo, joinTable, openTable, runCrank, subscribeTable, wallet, withdraw, type WalletInfo } from './lib/game';
+import { NO_OWNER, canBuild, currentSeat, expectedPayouts, netWorth, rent, saleValue, type TableView } from '../../shared/chain';
+import { act, deposit, getWalletInfo, joinTable, openTable, property, runCrank, subscribeTable, wallet, withdraw, type WalletInfo } from './lib/game';
 import { exportWallet } from './lib/wallet';
 
 const usdc = (atoms: number) => (atoms / TOKEN_SCALE).toFixed(2);
@@ -125,13 +125,27 @@ function TableScreen({ table, nonce, me, signer, refresh }: { table: string; non
         <div>
           <Board view={view} />
           <p>{view.stage === 'ordering' ? 'Drawing turn order…' : view.stage === 'rolling' ? 'Rolling…'
-            : `${view.seats[turnSeat].name} to ${view.stage === 'buydecision' ? 'decide' : 'roll'} · ${left}s`}{view.lastRoll ? ` · last roll ${view.lastRoll}` : ''}</p>
-          {myTurn && view.stage === 'preroll' && <button disabled={busy} onClick={action('roll')}>Roll</button>}
+            : `${view.seats[turnSeat].name} to ${view.stage === 'buydecision' ? 'decide' : view.seats[turnSeat].jailTurns ? 'bail or serve a jail turn' : 'roll'} · ${left}s`}
+            {view.lastRoll ? ` · last roll ${view.lastRoll}` : ''}</p>
+          {view.lastCard > 0 && <p className="card">Lucky card: {board.luckyDeck[view.lastCard - 1].text}</p>}
+          {myTurn && view.stage === 'preroll' && (view.seats[seat].jailTurns > 0 ? (
+            <div className="row">
+              <span>In jail, {view.seats[seat].jailTurns} turn{view.seats[seat].jailTurns > 1 ? 's' : ''} left.</span>
+              <button disabled={busy || view.seats[seat].cash < board.rules.bail} onClick={action('bail')}>Pay {money(board.rules.bail)} bail</button>
+              <button disabled={busy} onClick={action('roll')}>Serve this turn</button>
+            </div>
+          ) : <button disabled={busy} onClick={action('roll')}>{view.rollsThisTurn ? 'Roll again (you rolled a 6)' : 'Roll'}</button>)}
           {myTurn && view.stage === 'buydecision' && (() => {
             const space = board.spaces[view.seats[seat].position];
-            return <div className="row"><button disabled={busy} onClick={action('buy')}>Buy {space.name} for {money(space.price ?? 0)}</button>
+            return <div className="row"><button disabled={busy || view.seats[seat].cash < (space.price ?? 0)} onClick={action('buy')}>Buy {space.name} for {money(space.price ?? 0)}</button>
               <button disabled={busy} onClick={action('pass')}>Pass</button></div>;
           })()}
+          {myTurn && view.seats[seat].cash < 0 && <p className="error">You are {money(view.seats[seat].cash)} in debt: you can’t buy, build or pay bail until you sell.
+            Below {money(board.rules.bankruptCashBelow)}, or at a net worth of $0, you are bankrupt.</p>}
+          {myTurn && (view.stage === 'preroll' || view.stage === 'buydecision') && (
+            <Holdings view={view} seat={seat} canBuildNow={view.stage === 'preroll'} busy={busy}
+              onBuild={space => void run(() => property(table, 'build', space))} onSell={space => void run(() => property(table, 'sell', space))} />
+          )}
         </div>
       )}
       {(view.phase === 'finished' || view.phase === 'free') && <Results view={view} />}
@@ -141,14 +155,37 @@ function TableScreen({ table, nonce, me, signer, refresh }: { table: string; non
   );
 }
 
+function Holdings({ view, seat, canBuildNow, busy, onBuild, onSell }: {
+  view: TableView; seat: number; canBuildNow: boolean; busy: boolean; onBuild: (space: number) => void; onSell: (space: number) => void;
+}) {
+  const owned = board.spaces.filter(space => view.board[space.index].owner === seat);
+  if (!owned.length) return null;
+  return (
+    <table className="players"><thead><tr><th>Your property</th><th>Buildings</th><th>Rent</th><th /></tr></thead><tbody>
+      {owned.map(space => (
+        <tr key={space.index}>
+          <td>{space.name}</td><td>{space.kind === 'city' ? `${view.board[space.index].buildings}/${board.rules.maxBuildingsPerCity}` : '—'}</td>
+          <td>{money(rent(view, space.index))}</td>
+          <td className="row">
+            {canBuildNow && space.kind === 'city' && <button disabled={busy || !canBuild(view, seat, space.index)} onClick={() => onBuild(space.index)}
+              title="Needs the whole color group and cash for the building">Build {money(space.buildingCost ?? 0)}</button>}
+            <button disabled={busy} onClick={() => onSell(space.index)}>Sell for {money(saleValue(view, space.index))}</button>
+          </td>
+        </tr>))}
+    </tbody></table>
+  );
+}
+
 function Players({ view, me }: { view: TableView; me: string }) {
   return (
     <table className="players"><thead><tr><th>Seat</th><th>Cash</th><th>Net worth</th><th>Strikes</th><th /></tr></thead><tbody>
       {view.seats.map((seat, index) => (
         <tr key={seat.wallet} className={view.phase === 'playing' && currentSeat(view) === index ? 'turn' : ''}>
           <td><span className="dot" style={{ background: SEAT_COLORS[index] }} />{seat.name}{seat.wallet === me ? ' (you)' : ''}{view.host === seat.wallet ? ' · host' : ''}</td>
-          <td>{view.phase === 'lobby' ? '—' : money(seat.cash)}</td><td>{view.phase === 'lobby' ? '—' : money(netWorth(view, index))}</td>
-          <td>{seat.strikes}/3</td><td>{seat.eliminatedAt ? 'out' : ''}</td>
+          <td className={seat.cash < 0 ? 'error' : ''}>{view.phase === 'lobby' || seat.eliminatedAt ? '—' : money(seat.cash)}</td>
+          <td>{view.phase === 'lobby' || seat.eliminatedAt ? '—' : money(netWorth(view, index))}</td>
+          <td>{seat.strikes}/3</td>
+          <td>{seat.eliminatedAt ? (seat.strikes >= board.rules.strikesToForfeit ? 'forfeited' : 'bankrupt') : seat.jailTurns ? `in jail (${seat.jailTurns})` : seat.cash < 0 ? 'in debt' : ''}</td>
         </tr>))}
     </tbody></table>
   );
@@ -162,7 +199,8 @@ function Board({ view }: { view: TableView }) {
         return (
           <div key={space.index} className={`space ${space.kind}`} style={lot.owner !== NO_OWNER ? { borderColor: SEAT_COLORS[lot.owner] } : undefined}>
             <small>{space.index}</small><b>{space.name}</b>
-            {isProperty(space) && <small>{money(space.price ?? 0)} · rent {money(space.rent ?? 0)}</small>}
+            {isProperty(space) && <small>{money(space.price ?? 0)} · rent {money(lot.owner === NO_OWNER ? space.rent ?? 0 : rent(view, space.index))}</small>}
+            {lot.buildings > 0 && <small className="buildings">{'■'.repeat(lot.buildings)} {lot.buildings} building{lot.buildings > 1 ? 's' : ''}</small>}
             <div>{here.map(item => <span key={item.index} className="dot" style={{ background: SEAT_COLORS[item.index] }} />)}</div>
           </div>
         );

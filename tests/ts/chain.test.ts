@@ -8,8 +8,8 @@ import BN from 'bn.js';
 import { Keypair, PublicKey } from '@solana/web3.js';
 import { BOARD_SHA256, board, defaultTarget } from '../../shared/board';
 import {
-  NO_OWNER, PROGRAM_ID, accountsFor, buildInstruction, currentSeat, custodyAddress, decodeTable, expectedPayouts, idl, netWorth,
-  settleRemaining, tableAddress, tokenAddress, type TableView,
+  NO_OWNER, PROGRAM_ID, accountsFor, buildInstruction, canBuild, currentSeat, custodyAddress, decodeTable, expectedPayouts, idl, netWorth,
+  rent, saleValue, settleRemaining, tableAddress, tokenAddress, type TableView,
 } from '../../shared/chain';
 import { nextCrank } from '../../shared/client';
 import { BOARD_RS, renderBoardRs } from '../../scripts/gen-board';
@@ -109,4 +109,43 @@ test('the crank picks the liveness action each participant may send and when', a
   const refunding = { ...view, phase: 'refunding' as const, seats: view.seats.map((seat, index) => ({ ...seat, refunded: index === 0 })) };
   assert.deepEqual(nextCrank(refunding, me, 7), { action: { refund: 1 }, at: 7 });
   assert.equal(nextCrank({ ...view, phase: 'free' }, me, 7), undefined);
+});
+
+test('jail turns and the Lucky card decode, and the deck matches the frozen economy', async () => {
+  const { raw } = encodedTable({ last_card: 10 });
+  raw.seats[2].jail_turns = 2;
+  const view = decodeTable(tableAddress(5), await new BorshAccountsCoder(idl).encode('Table', raw));
+  assert.equal(view.lastCard, 10);
+  assert.equal(view.seats[2].jailTurns, 2);
+  assert.equal(board.luckyDeck.length, 12);
+  assert.equal(board.luckyDeck[view.lastCard - 1].text, 'Move forward 3 (resolve the space you land on).');
+  assert.deepEqual([board.rules.jailSpace, board.rules.jailTurns, board.rules.bail, board.rules.saleBps], [6, 3, 150, 8000]);
+});
+
+test('rent, sale value and build checks mirror the program', async () => {
+  const view = await decoded({ phase: { Playing: {} }, stage: { PreRoll: {} } });
+  view.board[1] = { owner: 1, buildings: 0 };
+  assert.equal(rent(view, 1), 6, 'base rent without the group');
+  assert.equal(canBuild(view, 1, 1), false, 'no building without the full group');
+  view.board[2] = { owner: 1, buildings: 0 };
+  assert.equal(rent(view, 1), 12, 'full group doubles');
+  assert.equal(canBuild(view, 1, 1), true);
+  for (const [buildings, expected] of [[1, 24], [2, 42], [3, 66]]) {
+    view.board[1].buildings = buildings;
+    assert.equal(rent(view, 1), expected);
+  }
+  assert.equal(canBuild(view, 1, 1), false, 'at most 3 buildings');
+  assert.equal(saleValue(view, 1), Math.floor((60 + 3 * 50) * 0.8));
+  view.board[23] = { owner: 0, buildings: 3 };
+  view.board[21] = { owner: 0, buildings: 0 };
+  assert.equal(rent(view, 23), 440);
+  view.board[21].owner = NO_OWNER;
+  assert.equal(rent(view, 23), 40, 'a broken group pays base rent');
+  for (const [count, space] of [4, 10, 16, 22].entries()) {
+    view.board[space] = { owner: 2, buildings: 0 };
+    assert.equal(rent(view, 4), 25 * (count + 1));
+  }
+  view.seats[1].cash = 49;
+  view.board[1].buildings = 0;
+  assert.equal(canBuild(view, 1, 1), false, 'needs cash for the building');
 });

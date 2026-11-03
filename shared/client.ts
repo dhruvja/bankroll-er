@@ -177,6 +177,9 @@ export class BankrollClient implements PaymentClient {
   roll(table: PublicKey, signer: Signer) { return this.act('roll', 'roll', table, signer); }
   buy(table: PublicKey, signer: Signer) { return this.act('buy', 'buy', table, signer); }
   pass(table: PublicKey, signer: Signer) { return this.act('pass', 'pass', table, signer); }
+  build(table: PublicKey, signer: Signer, space: number) { return this.act('build', 'build', table, signer, { space }); }
+  sell(table: PublicKey, signer: Signer, space: number) { return this.act('sell', 'sell', table, signer, { space }); }
+  payBail(table: PublicKey, signer: Signer) { return this.act('bail', 'pay_bail', table, signer); }
   forceTimeout(table: PublicKey, signer: Signer) { return this.act('timeout', 'force_timeout', table, signer); }
   cancel(table: PublicKey, signer: Signer) { return this.act('cancel', 'cancel_or_expire', table, signer); }
   refund(table: PublicKey, signer: Signer, view: TableView, seat: number) {

@@ -46,7 +46,7 @@ interface RawTable {
 
 export interface SeatView {
   wallet: string; name: string; refunded: boolean; cash: number; position: number;
-  strikes: number; eliminatedAt: number; payout: number;
+  jailTurns: number; strikes: number; eliminatedAt: number; payout: number;
 }
 /** Normalized Table snapshot. Times are unix seconds; token amounts are atoms. */
 export interface TableView {
@@ -54,6 +54,8 @@ export interface TableView {
   entry: number; maxPlayers: number; target: number; playerCount: number; lobbyDeadline: number;
   lastActionAt: number; stage: StageName; stageDeadline: number; turn: number; order: number[]; round: number;
   rollsThisTurn: number; extraRoll: boolean; vrfPending: boolean; vrfRequestedAt: number; lastRoll: number;
+  /** Lucky card (1–12) drawn by the latest roll, 0 when none. */
+  lastCard: number;
   eliminationSeq: number; endedAt: number; seats: SeatView[]; board: { owner: number; buildings: number }[];
 }
 
@@ -71,10 +73,10 @@ export function decodeTable(address: PublicKey, data: Buffer): TableView {
     stage: variant(raw.stage) as StageName, stageDeadline: raw.stage_deadline.toNumber(), turn: raw.turn,
     order: raw.order.slice(0, count), round: raw.round, rollsThisTurn: raw.rolls_this_turn, extraRoll: raw.extra_roll,
     vrfPending: variant(raw.vrf_purpose) !== 'none', vrfRequestedAt: raw.vrf_requested_at.toNumber(),
-    lastRoll: raw.last_roll, eliminationSeq: raw.elimination_seq, endedAt: raw.ended_at.toNumber(),
+    lastRoll: raw.last_roll, lastCard: raw.last_card, eliminationSeq: raw.elimination_seq, endedAt: raw.ended_at.toNumber(),
     seats: raw.seats.slice(0, count).map(seat => ({
       wallet: seat.wallet.toBase58(), name: Buffer.from(seat.name).toString('utf8').replace(/\0+$/, ''),
-      refunded: seat.refunded, cash: seat.cash.toNumber(), position: seat.position, strikes: seat.strikes,
+      refunded: seat.refunded, cash: seat.cash.toNumber(), position: seat.position, jailTurns: seat.jail_turns, strikes: seat.strikes,
       eliminatedAt: seat.eliminated_at, payout: seat.payout.toNumber(),
     })),
     board: raw.board.map(lot => ({ owner: lot.owner, buildings: lot.buildings })),
@@ -90,6 +92,31 @@ export function netWorth(table: TableView, seat: number): number {
     const space = board.spaces[index];
     return sum + (space.price ?? 0) + lot.buildings * (space.buildingCost ?? 0);
   }, table.seats[seat].cash);
+}
+
+const ownsGroup = (table: TableView, seat: number, group: string) => board.groups[group].every(space => table.board[space].owner === seat);
+
+/** Mirrors `Table::rent`: base, doubled for a full group, ×4/×7/×11 with buildings; publics scale with count. */
+export function rent(table: TableView, index: number): number {
+  const space = board.spaces[index], owner = table.board[index].owner, rules = board.rules;
+  if (owner === NO_OWNER || !space.rent || !space.group) return 0;
+  if (space.kind === 'public') return space.rent * board.publics.filter(item => table.board[item].owner === owner).length;
+  if (!ownsGroup(table, owner, space.group)) return space.rent;
+  const buildings = table.board[index].buildings;
+  return space.rent * (buildings ? rules.buildingRentMultipliers[buildings - 1] : rules.groupRentMultiplier);
+}
+
+/** Mirrors `Table::sell`: 80% of price plus buildings, rounded down. */
+export function saleValue(table: TableView, index: number): number {
+  const space = board.spaces[index], value = (space.price ?? 0) + table.board[index].buildings * (space.buildingCost ?? 0);
+  return Math.floor(value * board.rules.saleBps / 10_000);
+}
+
+/** Mirrors `Table::build`'s checks for the current seat in PreRoll. */
+export function canBuild(table: TableView, seat: number, index: number): boolean {
+  const space = board.spaces[index], lot = table.board[index];
+  return space.kind === 'city' && lot.owner === seat && lot.buildings < board.rules.maxBuildingsPerCity
+    && Boolean(space.group && ownsGroup(table, seat, space.group)) && table.seats[seat].cash >= (space.buildingCost ?? 0);
 }
 
 /** Mirrors `Table::payouts` so clients and the smoke can check settle independently. */
@@ -113,7 +140,7 @@ export function expectedPayouts(table: TableView): { payouts: number[]; treasury
 }
 
 export type InstructionName = 'create_table' | 'delegate_table' | 'open_table' | 'join_table' | 'cancel_or_expire' | 'refund_player'
-  | 'start_game' | 'roll' | 'buy' | 'pass' | 'force_timeout' | 'settle';
+  | 'start_game' | 'roll' | 'buy' | 'pass' | 'build' | 'sell' | 'pay_bail' | 'force_timeout' | 'settle';
 
 /** Every account name the IDL uses, resolved for one table and one acting wallet. */
 export function accountsFor(table: PublicKey, actor: PublicKey, recipient = actor): Record<string, PublicKey> {

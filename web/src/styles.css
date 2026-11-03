@@ -18,3 +18,5 @@ button:disabled { opacity: .5; cursor: default; }
 .board { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin: 12px 0; }
 .space { border: 2px solid #ddd; border-radius: 6px; padding: 4px; min-height: 64px; display: flex; flex-direction: column; font-size: 12px; }
 .space.lucky { background: #f1ecff; } .space.jail { background: #eee; } .space.auction { background: #e8f6ee; } .space.start { background: #fff1e0; }
+.card { background: #f1ecff; border-radius: 6px; padding: 6px 10px; display: inline-block; }
+.buildings { color: #2b7a3d; }

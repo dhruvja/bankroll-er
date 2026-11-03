@@ -82,11 +82,17 @@ export async function joinTable(table: string, nonce: number, name: string, entr
   await client.joinTable(new PublicKey(table), player, nonce, name);
 }
 
-type Action = 'start' | 'roll' | 'buy' | 'pass' | 'cancel';
+type Action = 'start' | 'roll' | 'buy' | 'pass' | 'bail' | 'cancel';
 export async function act(table: string, action: Action) {
   const signer = await wallet(), address = new PublicKey(table);
-  const run = { start: client.startGame, roll: client.roll, buy: client.buy, pass: client.pass, cancel: client.cancel }[action];
+  const run = { start: client.startGame, roll: client.roll, buy: client.buy, pass: client.pass, bail: client.payBail, cancel: client.cancel }[action];
   await run.call(client, address, signer);
+}
+
+/** Build on or sell one of your properties (space index). */
+export async function property(table: string, action: 'build' | 'sell', space: number) {
+  const signer = await wallet(), address = new PublicKey(table);
+  await (action === 'build' ? client.build(address, signer, space) : client.sell(address, signer, space));
 }
 
 export const subscribeTable = (table: string, onTable: (view: TableView) => void, onError: (error: Error) => void) =>

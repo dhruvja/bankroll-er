@@ -8,7 +8,8 @@ import { BankrollClient } from '../shared/client';
 import { SponsoredPayments } from '../shared/sponsored';
 
 export const ROOT = resolve(import.meta.dirname, '..');
-export const ARTIFACTS = resolve(ROOT, '../plans/bankroll/artifacts/phase-02');
+/** Evidence lands in the current plan phase's artifact folder (`BANKROLL_PHASE=phase-NN` overrides). */
+export const ARTIFACTS = resolve(ROOT, '../plans/bankroll/artifacts', process.env.BANKROLL_PHASE ?? 'phase-03');
 export const DEPLOYMENT = resolve(ROOT, 'shared/deployment.json');
 export const client = new BankrollClient();
 

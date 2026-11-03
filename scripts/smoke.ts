@@ -13,7 +13,8 @@ import { createAssociatedTokenAccountIdempotentInstruction, createTransferInstru
 import { DELEGATION_PROGRAM_ID, EPHEMERAL_SPL_TOKEN_PROGRAM_ID } from '@magicblock-labs/ephemeral-rollups-sdk';
 import { ER_RPC, PUBLIC_VALIDATOR, RELAY_FEE, ROUTER_RPC, TOKEN_SCALE, WITHDRAW_MINIMUM, invariant } from '../shared/config';
 import {
-  PROGRAM_ID, currentSeat, custodyAddress, delegationStatus, expectedPayouts, mintKey, tableAddress, tokenAddress, treasuryAddress, type TableView,
+  PROGRAM_ID, canBuild, currentSeat, custodyAddress, delegationStatus, expectedPayouts, isActive, mintKey, netWorth, tableAddress, tokenAddress,
+  treasuryAddress, type TableView,
 } from '../shared/chain';
 import { board } from '../shared/board';
 import { ProgramError, type SentTransaction } from '../shared/client';
@@ -137,10 +138,13 @@ async function execute() {
   record(await client.startGame(address, players[0]));
   const startedAt = now();
 
-  // Bots: buy when cash stays >= $100 afterwards. The last seat idles through its first turn so
-  // the others must strike it with force_timeout.
+  // Bots play sim.py's greedy policy: sell out of debt, build when $150 stays in hand, bail with
+  // at least $500, buy when $100 stays in hand. The last seat idles through its first turn so the
+  // others must strike it with force_timeout.
   const idleSeat = playerCount - 1;
   let idled = false, finishedView: TableView | undefined, settle: SentTransaction | undefined, turns = 0;
+  const events = { builds: 0, sales: 0, bails: 0, jailTurnsServed: 0, cards: [] as number[], eliminations: [] as { seat: number; at: number }[] };
+  let lastCardNonce = 0;
   const signerFor = (wallet: string) => players.find(player => player.publicKey.toBase58() === wallet)!;
   const attempt = async (label: string, run: () => Promise<SentTransaction>) => {
     try { record(await run()); }
@@ -163,6 +167,7 @@ async function execute() {
       break;
     }
     invariant(table.phase === 'playing', `Unexpected phase ${table.phase}.`);
+    if (table.lastCard && table.vrfNonce !== lastCardNonce) { events.cards.push(table.lastCard); lastCardNonce = table.vrfNonce; }
     if (table.stage === 'ordering' || table.stage === 'rolling') {
       if (now() > table.vrfRequestedAt + board.rules.deadlinesSec.vrfRetry + 1) {
         await attempt('vrf retry', () => table.stage === 'ordering' ? client.startGame(address, players[0]) : client.roll(address, actor));
@@ -176,6 +181,17 @@ async function execute() {
       continue;
     }
     if (table.stage === 'preroll') {
+      const me = table.seats[seat];
+      if (me.cash < 0) {
+        const sale = table.board.map((lot, space) => ({ lot, space })).filter(item => item.lot.owner === seat)
+          .sort((a, b) => Number(a.lot.buildings > 0) - Number(b.lot.buildings > 0) || (board.spaces[a.space].price ?? 0) - (board.spaces[b.space].price ?? 0))[0];
+        if (sale) { await attempt('sell', () => client.sell(address, actor, sale.space)); events.sales++; continue; }
+      }
+      const build = board.spaces.filter(space => canBuild(table, seat, space.index) && me.cash - (space.buildingCost ?? 0) >= 150)
+        .sort((a, b) => table.board[a.index].buildings - table.board[b.index].buildings || (b.rent ?? 0) - (a.rent ?? 0))[0];
+      if (build) { await attempt('build', () => client.build(address, actor, build.index)); events.builds++; continue; }
+      if (me.jailTurns > 0 && me.cash >= 500) { await attempt('bail', () => client.payBail(address, actor)); events.bails++; continue; }
+      if (me.jailTurns > 0) events.jailTurnsServed++;
       await attempt('roll', () => client.roll(address, actor));
       turns++;
       continue;
@@ -188,6 +204,10 @@ async function execute() {
     throw new Error(`Unexpected stage ${table.stage}.`);
   }
   invariant(finishedView && settle, 'No settlement.');
+  const done = finishedView;
+  done.seats.forEach((item, index) => { if (item.eliminatedAt) events.eliminations.push({ seat: index, at: item.eliminatedAt }); });
+  const activeLeft = done.seats.filter((_, index) => isActive(done, index)).length;
+  const endedBy = activeLeft <= 1 ? 'last-standing' : done.seats.some((_, index) => isActive(done, index) && netWorth(done, index) >= done.target) ? 'target' : 'idle';
 
   // Exact settlement: independent payout math, ER balances, fee, custody and table state. ER reads
   // can trail a confirmed signature briefly, so poll until the settled state is visible.
@@ -207,6 +227,7 @@ async function execute() {
       treasuryExact: after.treasury - before.treasury === BigInt(expected.treasury),
       feeAtLeast3Percent: expected.treasury >= fee,
       idleSeatStruck: table.seats[idleSeat].strikes >= 1,
+      endedByTargetOrBankruptcy: endedBy !== 'idle',
     };
     if (Object.values(assertions).every(Boolean)) break;
     await pause(500);
@@ -239,7 +260,7 @@ async function execute() {
     players: players.map((player, seat) => ({ seat, wallet: player.publicKey.toBase58(), name: names[seat], finalCash: finishedView.seats[seat].cash,
       eliminatedAt: finishedView.seats[seat].eliminatedAt, strikes: finishedView.seats[seat].strikes, payout: usdc(expected.payouts[seat]),
       erBefore: usdc(before.players[seat]), erAfter: usdc(after.players[seat]), lamports: lamportsAfter[seat] })),
-    pot: usdc(pot), treasuryDelta: usdc(after.treasury - before.treasury), feeBps: 300, rounds: finishedView.round, rolls: turns,
+    pot: usdc(pot), treasuryDelta: usdc(after.treasury - before.treasury), feeBps: 300, rounds: finishedView.round, rolls: turns, endedBy, events,
     assertions: { ...assertions, withdrawLanded, zeroSol },
     withdraw: { seat: withdrawer.seat, amount: usdc(withdrawAmount), baseBefore: usdc(baseBefore), baseAfter: usdc(baseAfter) },
     signatures: { base, payments: paymentSignatures, settle: settle.signature, er: sent.map(tx => ({ label: tx.label, signature: tx.signature, ms: tx.confirmedAt - tx.sentAt })),
