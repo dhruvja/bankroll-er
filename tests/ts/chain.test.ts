@@ -5,11 +5,13 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { BorshAccountsCoder } from '@anchor-lang/core';
 import BN from 'bn.js';
-import { Keypair, PublicKey } from '@solana/web3.js';
+import { Keypair, PublicKey, SystemProgram } from '@solana/web3.js';
+import { DELEGATION_PROGRAM_ID, EPHEMERAL_SPL_TOKEN_PROGRAM_ID } from '@magicblock-labs/ephemeral-rollups-sdk';
+import { PUBLIC_VALIDATOR } from '../../shared/config';
 import { BOARD_SHA256, board, defaultTarget } from '../../shared/board';
 import {
   NO_OFFER, NO_OWNER, PROGRAM_ID, accountsFor, buildInstruction, canBuild, currentSeat, custodyAddress, decodeTable, expectedPayouts, idl, netWorth,
-  rent, saleValue, settleRemaining, tableAddress, tokenAddress, tradeOffers, tradeable, type TableView,
+  custodyRecordAddress, isLiveCustodyRecord, rent, saleValue, settleRemaining, tableAddress, tokenAddress, tradeOffers, tradeable, type TableView,
 } from '../../shared/chain';
 import { nextCrank } from '../../shared/client';
 import { BOARD_RS, renderBoardRs } from '../../scripts/gen-board';
@@ -90,8 +92,29 @@ test('the IDL builder orders accounts and flags signers, and settle appends each
   const settle = buildInstruction('settle', accountsFor(table, actor), {}, settleRemaining(view));
   assert.equal(settle.keys.length, 7 + 2 * view.playerCount);
   assert.ok(settle.keys[7].pubkey.equals(tokenAddress(new PublicKey(view.seats[0].wallet))) && settle.keys[7].isWritable);
-  assert.ok(settle.keys[8].pubkey.equals(custodyAddress(new PublicKey(view.seats[0].wallet))) && !settle.keys[8].isWritable);
+  assert.ok(settle.keys[8].pubkey.equals(custodyRecordAddress(new PublicKey(view.seats[0].wallet))) && !settle.keys[8].isWritable);
+  const gone = settleRemaining(view, [true, false, true]);
+  assert.deepEqual(gone.map(key => key.isWritable), [true, false, false, false, true, false], 'only a live, paid ATA is writable');
   assert.throws(() => buildInstruction('refund_player', {}, { seat: 0 }), /Missing account/);
+  const withdraw = buildInstruction('withdraw_fees', accountsFor(table, actor), { amount: new BN(5) });
+  assert.ok(withdraw.keys[0].isSigner && withdraw.keys[4].pubkey.equals(tokenAddress(actor)) && withdraw.keys[4].isWritable);
+});
+
+test('a custody record is live only when it delegates an ESPL account to the public validator', () => {
+  const record = (authority: string, owner: PublicKey, discriminator = 100n) => {
+    const data = Buffer.alloc(96);
+    data.writeBigUInt64LE(discriminator, 0);
+    new PublicKey(authority).toBuffer().copy(data, 8);
+    owner.toBuffer().copy(data, 40);
+    return data;
+  };
+  const live = { owner: DELEGATION_PROGRAM_ID, data: record(PUBLIC_VALIDATOR, EPHEMERAL_SPL_TOKEN_PROGRAM_ID) };
+  assert.ok(isLiveCustodyRecord(live));
+  assert.ok(!isLiveCustodyRecord(null), 'undelegated: the record is gone');
+  assert.ok(!isLiveCustodyRecord({ ...live, owner: SystemProgram.programId }));
+  assert.ok(!isLiveCustodyRecord({ ...live, data: record(Keypair.generate().publicKey.toBase58(), EPHEMERAL_SPL_TOKEN_PROGRAM_ID) }), 'another validator');
+  assert.ok(!isLiveCustodyRecord({ ...live, data: record(PUBLIC_VALIDATOR, PROGRAM_ID) }), 'not an eATA');
+  assert.ok(!isLiveCustodyRecord({ ...live, data: record(PUBLIC_VALIDATOR, EPHEMERAL_SPL_TOKEN_PROGRAM_ID, 101n) }));
 });
 
 test('the crank picks the liveness action each participant may send and when', async () => {
@@ -102,12 +125,16 @@ test('the crank picks the liveness action each participant may send and when', a
   assert.notEqual(currentSeat(view), 1);
   assert.deepEqual(nextCrank({ ...view, stage: 'rolling', vrfRequestedAt: 1010 }, me, 1000), { action: 'retry-roll', at: 1010 + 3 * rules.vrfRetry });
   assert.deepEqual(nextCrank({ ...view, stage: 'rolling', vrfRequestedAt: 1010, order: [1, 0, 2, 3] }, me, 1000), { action: 'retry-roll', at: 1010 + rules.vrfRetry });
-  assert.deepEqual(nextCrank({ ...view, stage: 'rolling' }, me, 1000 + rules.idle), { action: 'timeout', at: 1000 + rules.idle });
+  for (const stage of ['preroll', 'rolling', 'buydecision', 'tradeoffers'] as const) {
+    assert.deepEqual(nextCrank({ ...view, stage }, me, 1000 + rules.idle), { action: 'idle-settle', at: 1000 + rules.idle }, `past idle in ${stage}: end and settle at once`);
+  }
+  assert.deepEqual(nextCrank({ ...view, stage: 'ordering' }, me, 1000 + rules.idle)?.action, 'timeout', 'no turn order: the timeout refunds');
   assert.deepEqual(nextCrank({ ...view, stage: 'ordering', vrfRequestedAt: 1000 }, me, 1001), { action: 'retry-start', at: 1000 + rules.vrfRetry });
   assert.deepEqual(nextCrank({ ...view, phase: 'finished' }, me, 5), { action: 'settle', at: 5 });
   assert.deepEqual(nextCrank({ ...view, phase: 'lobby', lobbyDeadline: 1600 }, me, 5), { action: 'expire', at: 1600 });
   const refunding = { ...view, phase: 'refunding' as const, seats: view.seats.map((seat, index) => ({ ...seat, refunded: index === 0 })) };
-  assert.deepEqual(nextCrank(refunding, me, 7), { action: { refund: 1 }, at: 7 });
+  assert.deepEqual(nextCrank(refunding, me, 7), { action: 'refund', at: 7 });
+  assert.equal(nextCrank({ ...refunding, seats: refunding.seats.map(seat => ({ ...seat, refunded: true })) }, me, 7), undefined);
   assert.equal(nextCrank({ ...view, phase: 'free' }, me, 7), undefined);
   const offers = { ...view, stage: 'tradeoffers' as const, stageDeadline: 1035, trade: { space: 1, offers: [0, 0, 0], deadline: 1020 } };
   assert.deepEqual(nextCrank(offers, me, 1000), { action: 'timeout', at: 1020 }, 'an empty offer window cancels when it closes');

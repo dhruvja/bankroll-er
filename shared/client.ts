@@ -1,11 +1,11 @@
 import bs58 from 'bs58';
-import { Connection, PublicKey, Transaction, TransactionInstruction, type AccountInfo, type BlockhashWithExpiryBlockHeight, type Signer } from '@solana/web3.js';
-import { unpackAccount } from '@solana/spl-token';
+import { Connection, PublicKey, SYSVAR_CLOCK_PUBKEY, Transaction, TransactionInstruction, type AccountInfo, type BlockhashWithExpiryBlockHeight, type Signer } from '@solana/web3.js';
+import { TOKEN_PROGRAM_ID, unpackAccount } from '@solana/spl-token';
 import { DELEGATION_PROGRAM_ID, EPHEMERAL_SPL_TOKEN_PROGRAM_ID } from '@magicblock-labs/ephemeral-rollups-sdk';
 import { BASE_RPC, DEVNET_GENESIS, ER_RPC, PUBLIC_VALIDATOR, invariant } from './config';
 import {
-  NO_OFFER, PHASE_OFFSET, PROGRAM_ID, accountsFor, buildInstruction, custodyAddress, decodeTable, delegationStatus, idl,
-  currentSeat, isActive, mintKey, settleRemaining, tableAddress, tokenAddress, u64, type TableView,
+  NO_OFFER, PHASE_OFFSET, PROGRAM_ID, accountsFor, buildInstruction, custodyAddress, custodyRecordAddress, decodeTable, delegationStatus, idl, isLiveCustodyRecord,
+  currentSeat, expectedPayouts, isActive, mintKey, settleRemaining, tableAddress, tokenAddress, u64, type TableView,
 } from './chain';
 import { board } from './board';
 import type { PaymentClient } from './sponsored';
@@ -92,6 +92,21 @@ export class BankrollClient implements PaymentClient {
   async erTokenBalance(owner: PublicKey): Promise<bigint> {
     const account = await this.er.getAccountInfo(tokenAddress(owner), 'confirmed');
     return account ? unpackAccount(tokenAddress(owner), account).amount : 0n;
+  }
+
+  /** Mirrors the program's `payable`: the wallet's eATA is delegated to the public validator (so
+   * the ER holds its canonical ATA) and that ATA is a live, unfrozen token account there. */
+  async payable(wallet: PublicKey): Promise<boolean> {
+    const [token, record] = await this.er.getMultipleAccountsInfo([tokenAddress(wallet), custodyRecordAddress(wallet)], 'confirmed');
+    if (!token?.owner.equals(TOKEN_PROGRAM_ID) || !isLiveCustodyRecord(record)) return false;
+    try { return !unpackAccount(tokenAddress(wallet), token).isFrozen; } catch { return false; }
+  }
+
+  /** The ER's own clock (unix seconds); deadlines are judged against it, not the local clock. */
+  async erNow(): Promise<number> {
+    const clock = await this.er.getAccountInfo(SYSVAR_CLOCK_PUBKEY, 'confirmed');
+    invariant(clock, 'The rollup clock is unavailable.');
+    return Number(clock.data.readBigInt64LE(32));
   }
 
   async readTable(address: PublicKey): Promise<TableView> {
@@ -186,31 +201,62 @@ export class BankrollClient implements PaymentClient {
   acceptTrade(table: PublicKey, signer: Signer, seat: number, space: number) { return this.act('trade-accept', 'accept_trade', table, signer, { seat, space }); }
   forceTimeout(table: PublicKey, signer: Signer) { return this.act('timeout', 'force_timeout', table, signer); }
   cancel(table: PublicKey, signer: Signer) { return this.act('cancel', 'cancel_or_expire', table, signer); }
-  refund(table: PublicKey, signer: Signer, view: TableView, seat: number) {
-    return this.act('refund', 'refund_player', table, signer, { seat }, new PublicKey(view.seats[seat].wallet));
+  /** Refunds one seat. Its ATA is passed writable when live; when it is gone it is passed read-only,
+   * which the program accepts only after the refund grace and pays to the treasury instead. */
+  async refund(table: PublicKey, signer: Signer, view: TableView, seat: number) {
+    await Promise.all([this.verifyDevnet(), this.verifyPublicRollup(), this.verifyTableRoute(table)]);
+    const wallet = new PublicKey(view.seats[seat].wallet);
+    const instruction = buildInstruction('refund_player', accountsFor(table, signer.publicKey, wallet), { seat });
+    const token = instruction.keys.find(key => key.pubkey.equals(tokenAddress(wallet)));
+    invariant(token, 'Refund is missing the seat account.');
+    token.isWritable = await this.payable(wallet);
+    return this.sendEr('refund', [instruction], signer);
   }
-  settle(table: PublicKey, signer: Signer, view: TableView) {
-    return this.act('settle', 'settle', table, signer, {}, undefined, settleRemaining(view));
+  /** Refunds every pending seat that can be refunded now: live accounts at once, gone ones after the grace. */
+  async refundPending(table: PublicKey, signer: Signer, view: TableView, now: number) {
+    const sent: SentTransaction[] = [];
+    for (const [seat, item] of view.seats.entries()) {
+      if (item.refunded || (now < view.stageDeadline && !(await this.payable(new PublicKey(item.wallet))))) continue;
+      sent.push(await this.refund(table, signer, view, seat));
+    }
+    return sent;
+  }
+  async settle(table: PublicKey, signer: Signer, view: TableView) {
+    const { payouts } = expectedPayouts(view);
+    const writable = await Promise.all(view.seats.map((seat, index) => payouts[index] > 0 ? this.payable(new PublicKey(seat.wallet)) : false));
+    return this.act('settle', 'settle', table, signer, {}, undefined, settleRemaining(view, writable));
+  }
+  /** One transaction: end an abandoned game by ranking (`force_timeout` past the idle deadline) and settle it. */
+  async endIdleAndSettle(table: PublicKey, signer: Signer, view: TableView) {
+    await Promise.all([this.verifyDevnet(), this.verifyPublicRollup(), this.verifyTableRoute(table)]);
+    const { payouts } = expectedPayouts(view);
+    const writable = await Promise.all(view.seats.map((seat, index) => payouts[index] > 0 ? this.payable(new PublicKey(seat.wallet)) : false));
+    const accounts = accountsFor(table, signer.publicKey);
+    return this.sendEr('idle-settle', [buildInstruction('force_timeout', accounts), buildInstruction('settle', accounts, {}, settleRemaining(view, writable))], signer);
+  }
+  /** ADMIN: move `amount` atoms of fees from the treasury to the admin's own ER account. */
+  async withdrawFees(admin: Signer, amount: bigint) {
+    await Promise.all([this.verifyDevnet(), this.verifyPublicRollup()]);
+    return this.sendEr('withdraw-fees', [buildInstruction('withdraw_fees', accountsFor(PublicKey.default, admin.publicKey), { amount: u64(amount) })], admin);
   }
 }
 
 /** What a participant's client should send next for liveness, or nothing yet. */
-export type CrankAction = 'timeout' | 'retry-roll' | 'retry-start' | 'settle' | 'expire' | { refund: number };
+export type CrankAction = 'timeout' | 'idle-settle' | 'retry-roll' | 'retry-start' | 'settle' | 'expire' | 'refund';
 export function nextCrank(table: TableView, wallet: string, now: number): { action: CrankAction; at: number } | undefined {
   const rules = board.rules.deadlinesSec, seat = table.seats.findIndex(item => item.wallet === wallet);
   if (seat < 0) return undefined;
   const idle = table.lastActionAt + rules.idle;
   switch (table.phase) {
     case 'lobby': return { action: 'expire', at: table.lobbyDeadline };
-    case 'refunding': {
-      const pending = table.seats.findIndex(item => !item.refunded);
-      return pending < 0 ? undefined : { action: { refund: pending }, at: now };
-    }
+    // Live seats are refunded at once; a seat whose accounts are gone waits for the refund grace.
+    case 'refunding': return table.seats.some(item => !item.refunded) ? { action: 'refund', at: now } : undefined;
     case 'finished': return { action: 'settle', at: now };
     case 'playing': {
       if (table.stage === 'ordering') return { action: now >= idle ? 'timeout' : 'retry-start', at: Math.min(idle, table.vrfRequestedAt + rules.vrfRetry) };
+      // Past the idle deadline no player action is accepted: end by ranking and settle in one transaction.
+      if (now >= idle) return { action: 'idle-settle', at: idle };
       if (table.stage === 'rolling') {
-        if (now >= idle) return { action: 'timeout', at: idle };
         // Mirrors OTHER_SEAT_RETRY_SECONDS: seats that aren't rolling wait three VRF retry windows.
         const wait = seat === currentSeat(table) ? rules.vrfRetry : 3 * rules.vrfRetry;
         return isActive(table, seat) ? { action: 'retry-roll', at: table.vrfRequestedAt + wait } : { action: 'timeout', at: idle };
@@ -235,12 +281,13 @@ export function startCrank(client: BankrollClient, address: PublicKey, signer: S
     busy = true;
     const view = table, action = step.action;
     const send = action === 'timeout' ? client.forceTimeout(address, signer)
+      : action === 'idle-settle' ? client.endIdleAndSettle(address, signer, view)
       : action === 'retry-roll' ? client.roll(address, signer)
       : action === 'retry-start' ? client.startGame(address, signer)
       : action === 'settle' ? client.settle(address, signer, view)
       : action === 'expire' ? client.cancel(address, signer)
-      : client.refund(address, signer, view, action.refund);
-    void send.then(onSent, () => {}).finally(() => { busy = false; });
+      : client.refundPending(address, signer, view, now).then(sent => sent[0]);
+    void send.then(sent => { if (sent) onSent(sent); }, () => {}).finally(() => { busy = false; });
   }, 500);
   return () => { stopped = true; clearInterval(timer); unsubscribe(); };
 }

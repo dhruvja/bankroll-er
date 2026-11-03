@@ -4,10 +4,15 @@
  *   --execute [--players 3] [--target 3000] [--trades]
  *                                             zero-SOL bots play a staked 1 USDC game (G8); with
  *                                             --trades they trade on every Auction landing they can
+ *   --execute --abandon [--resume]            3 bots play a few turns, then all stop; after the real
+ *                                             60-min idle deadline the returning current seat is
+ *                                             refused, and one transaction from a fresh zero-SOL
+ *                                             wallet ends, ranks and settles the game exactly.
+ *                                             --resume continues from smoke-abandon-start.json
  * Player wallets come from `.env` (SMOKE_PLAYER_<n>, base58 secret keys) and are created there if
  * missing. They never receive SOL; the admin only tops up their base USDC.
  */
-import { appendFileSync, existsSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import bs58 from 'bs58';
 import { Keypair, PublicKey } from '@solana/web3.js';
@@ -21,7 +26,7 @@ import {
 import { board } from '../shared/board';
 import { ProgramError, type SentTransaction } from '../shared/client';
 import { depositForEntry } from '../shared/funding';
-import { ROOT, client, filePayments, flags, loadAdmin, readDeployment, requireDevnet, saveArtifact, sendBase } from './node';
+import { ARTIFACTS, ROOT, client, filePayments, flags, loadAdmin, readDeployment, requireDevnet, saveArtifact, sendBase } from './node';
 
 const args = flags();
 const pause = (ms: number) => new Promise(done => setTimeout(done, ms));
@@ -92,24 +97,13 @@ async function lamports(owner: PublicKey) {
   return { base: await client.base.getBalance(owner), er: await client.er.getBalance(owner) };
 }
 
-async function execute() {
-  const playerCount = Number(args.value('players') ?? 3), target = Number(args.value('target') ?? 3000), entry = TOKEN_SCALE;
-  const trades = args.has('trades');
-  invariant([2, 3, 4].includes(playerCount) && board.rules.targets.includes(target), 'Use --players 2-4 and --target 3000/5000/7000.');
-  await requireDevnet();
-  const admin = loadAdmin(), players = loadPlayers(playerCount), names = players.map((_, index) => `Bot ${index + 1}`);
-  const { payments, signatures: paymentSignatures } = filePayments();
-  const sent: SentTransaction[] = [], base: Record<string, string> = {};
-  const record = (tx: SentTransaction) => { sent.push(tx); return tx; };
-  const adminBefore = { lamports: await client.base.getBalance(admin.publicKey), usdc: (await client.walletBalances(admin.publicKey)).base };
-
-  // Zero SOL, always: refuse to run with a funded player wallet.
+/** Zero SOL, always: refuse funded wallets. Then top each play balance up to one entry with the
+ * sponsored deposit, the admin sending base USDC first when a wallet lacks it. */
+async function fundPlayers(players: Keypair[], admin: Keypair, payments: ReturnType<typeof filePayments>['payments'], entry: number, base: Record<string, string>) {
   for (const player of players) {
     const value = await lamports(player.publicKey);
     invariant(value.base === 0 && value.er === 0, `${player.publicKey.toBase58()} holds lamports; smoke wallets must have 0 SOL.`);
   }
-
-  // Fund each play balance with exactly one entry's worth via the sponsored deposit.
   for (const [index, player] of players.entries()) {
     for (let attempt = 0; attempt < 60 && !(await payments.reconcile(player.publicKey, true)); attempt++) await pause(3000);
     let balance = await client.walletBalances(player.publicKey);
@@ -126,6 +120,19 @@ async function execute() {
     await payments.execute(player, 'deposit', depositForEntry(balance.base, balance.er, BigInt(entry)));
     invariant((await client.walletBalances(player.publicKey)).er >= BigInt(entry), `Player ${index} play balance did not arrive.`);
   }
+}
+
+async function execute() {
+  const playerCount = Number(args.value('players') ?? 3), target = Number(args.value('target') ?? 3000), entry = TOKEN_SCALE;
+  const trades = args.has('trades');
+  invariant([2, 3, 4].includes(playerCount) && board.rules.targets.includes(target), 'Use --players 2-4 and --target 3000/5000/7000.');
+  await requireDevnet();
+  const admin = loadAdmin(), players = loadPlayers(playerCount), names = players.map((_, index) => `Bot ${index + 1}`);
+  const { payments, signatures: paymentSignatures } = filePayments();
+  const sent: SentTransaction[] = [], base: Record<string, string> = {};
+  const record = (tx: SentTransaction) => { sent.push(tx); return tx; };
+  const adminBefore = { lamports: await client.base.getBalance(admin.publicKey), usdc: (await client.walletBalances(admin.publicKey)).base };
+  await fundPlayers(players, admin, payments, entry, base);
 
   const treasury = treasuryAddress();
   const before = { players: await Promise.all(players.map(player => client.erTokenBalance(player.publicKey))), treasury: await client.erTokenBalance(treasury) };
@@ -330,6 +337,122 @@ async function execute() {
   console.log(saveArtifact('smoke-execute.json', result));
 }
 
+interface AbandonStart {
+  at: string; table: { index: number; address: string; gameNonce: number }; players: string[]; rolls: number;
+  /** The table as the bots left it, and each seat's ER USDC then (entries already paid). */
+  snapshot: TableView; erAtAbandon: string[]; treasuryAtAbandon: string; idleAt: number; signatures: { label: string; signature: string }[];
+}
+
+/** G8 abandon: everyone stops, and only a ranking can end the game, from any returning client. */
+async function abandon() {
+  await requireDevnet();
+  const players = loadPlayers(3), entry = TOKEN_SCALE, startFile = resolve(ARTIFACTS, 'smoke-abandon-start.json');
+  const json = (value: unknown) => JSON.stringify(value, (_key, item: unknown) => typeof item === 'bigint' ? item.toString() : item);
+  let start: AbandonStart;
+  if (args.has('resume')) start = JSON.parse(readFileSync(startFile, 'utf8')) as AbandonStart;
+  else {
+    const admin = loadAdmin(), base: Record<string, string> = {};
+    const { payments } = filePayments();
+    await fundPlayers(players, admin, payments, entry, base);
+    const free = await client.findFreeTables();
+    invariant(free.length > 0, 'No Free table.');
+    const address = new PublicKey(free[0].address);
+    invariant(await client.erTokenBalance(address) === 0n, `Table ${free[0].index} custody is not empty.`);
+    const sent: SentTransaction[] = [];
+    sent.push(await client.openTable(address, players[0], { name: 'Bot 1', entry, maxPlayers: 3, target: 7000 }));
+    const nonce = (await client.readTable(address)).gameNonce;
+    for (const seat of [1, 2]) sent.push(await client.joinTable(address, players[seat], nonce, `Bot ${seat + 1}`));
+    sent.push(await client.startGame(address, players[0]));
+    // A few turns of plain play (buy with $100 to spare, pass any trade), stopping in a PreRoll.
+    let rolls = 0;
+    for (;;) {
+      const table = await client.readTable(address), seat = currentSeat(table), actor = players[seat];
+      invariant(table.phase === 'playing', `Unexpected phase ${table.phase} before the abandon.`);
+      if (table.stage === 'ordering' || table.stage === 'rolling') {
+        if (Date.now() / 1000 > table.vrfRequestedAt + board.rules.deadlinesSec.vrfRetry + 1) {
+          sent.push(await (table.stage === 'ordering' ? client.startGame(address, players[0]) : client.roll(address, actor)));
+        } else await pause(150);
+        continue;
+      }
+      if (table.stage === 'preroll' && rolls >= 6 && table.lastRoll !== 0) break;
+      if (table.stage === 'preroll') { sent.push(await client.roll(address, actor)); rolls++; continue; }
+      if (table.stage === 'buydecision') {
+        const price = board.spaces[table.seats[seat].position].price ?? 0;
+        sent.push(await (table.seats[seat].cash - price >= 100 ? client.buy(address, actor) : client.pass(address, actor)));
+        continue;
+      }
+      if (table.stage === 'tradeopen' || table.stage === 'tradeoffers') { sent.push(await client.pass(address, actor)); continue; }
+      throw new Error(`Unexpected stage ${table.stage}.`);
+    }
+    const snapshot = await client.readTable(address);
+    start = {
+      at: new Date().toISOString(), table: { index: free[0].index, address: address.toBase58(), gameNonce: nonce }, players: players.map(player => player.publicKey.toBase58()),
+      rolls, snapshot, erAtAbandon: (await Promise.all(players.map(player => client.erTokenBalance(player.publicKey)))).map(String),
+      treasuryAtAbandon: String(await client.erTokenBalance(treasuryAddress())), idleAt: snapshot.lastActionAt + board.rules.deadlinesSec.idle,
+      signatures: [...sent.map(tx => ({ label: tx.label, signature: tx.signature })), ...Object.entries(base).map(([label, signature]) => ({ label: `base:${label}`, signature }))],
+    };
+    saveArtifact('smoke-abandon-start.json', start);
+    console.log(`abandoned table ${start.table.index} at ER ${snapshot.lastActionAt}; idle deadline ${new Date(start.idleAt * 1000).toISOString()}`);
+  }
+
+  // Every bot is gone. Nobody touches the table until the ER clock passes the idle deadline.
+  const address = new PublicKey(start.table.address);
+  for (let erNow = await client.erNow(); erNow < start.idleAt + 5; erNow = await client.erNow()) {
+    const table = await client.readTable(address);
+    invariant(table.gameNonce === start.table.gameNonce && table.phase === 'playing' && table.lastActionAt === start.snapshot.lastActionAt,
+      `The abandoned table changed while waiting: ${json(table)}`);
+    console.log(`waiting: ${Math.ceil((start.idleAt + 5 - erNow) / 60)} min to the idle deadline (ER ${erNow})`);
+    await pause(Math.min(60_000, Math.max(5_000, (start.idleAt + 5 - erNow) * 1000)));
+  }
+
+  // The current seat returns first and tries to keep playing: refused, nothing changes.
+  const seat = currentSeat(start.snapshot), returning = players[seat];
+  let refused: { seat: number; error: string; signature: string } | undefined;
+  try { await client.roll(address, returning); }
+  catch (error) {
+    invariant(error instanceof ProgramError && /^IdleDeadlinePassed /.test(error.message), `Unexpected refusal: ${String(error)}`);
+    refused = { seat, error: error.message, signature: error.signature };
+  }
+  invariant(refused, 'The returning current seat was allowed to roll after the idle deadline.');
+  const unchanged = await client.readTable(address);
+  invariant(json(unchanged) === json(start.snapshot), 'A refused action changed the table.');
+
+  // One transaction from a wallet that never played and holds no SOL: end by ranking and settle.
+  const fresh = Keypair.generate();
+  const ending = await client.endIdleAndSettle(address, fresh, unchanged);
+  const expected = expectedPayouts(start.snapshot);
+  let assertions: Record<string, boolean> = {}, table = unchanged, after = { players: [] as bigint[], treasury: 0n, custody: -1n };
+  for (let poll = 0; poll < 40; poll++) {
+    table = await client.readTable(address);
+    after = { players: await Promise.all(players.map(player => client.erTokenBalance(player.publicKey))), treasury: await client.erTokenBalance(treasuryAddress()),
+      custody: await client.erTokenBalance(address) };
+    assertions = {
+      tableFree: table.phase === 'free' && table.gameNonce === start.table.gameNonce,
+      endedByIdleRanking: table.endedAt >= start.idleAt,
+      noForfeits: table.seats.every((item, index) => item.strikes === start.snapshot.seats[index].strikes && item.eliminatedAt === start.snapshot.seats[index].eliminatedAt),
+      payoutsRecorded: table.seats.every((item, index) => item.payout === expected.payouts[index]),
+      playerBalancesExact: players.every((_, index) => after.players[index] - BigInt(start.erAtAbandon[index]) === BigInt(expected.payouts[index])),
+      treasuryExact: after.treasury - BigInt(start.treasuryAtAbandon) === BigInt(expected.treasury),
+      custodyZero: after.custody === 0n,
+    };
+    if (Object.values(assertions).every(Boolean)) break;
+    await pause(500);
+  }
+  invariant(Object.values(assertions).every(Boolean), `Abandon settlement mismatch: ${json({ assertions, expected, after, table })}`);
+  const lamportsAfter = await Promise.all([...players, fresh].map(player => lamports(player.publicKey)));
+  const zeroSol = lamportsAfter.every(value => value.base === 0 && value.er === 0);
+  invariant(zeroSol, `A wallet gained lamports: ${json(lamportsAfter)}`);
+  console.log(saveArtifact('smoke-abandon.json', {
+    ok: true, at: new Date().toISOString(), program: PROGRAM_ID.toBase58(), table: start.table, abandonedAt: start.at, idleAt: start.idleAt, rollsBeforeAbandon: start.rolls,
+    players: start.snapshot.seats.map((item, index) => ({ seat: index, wallet: item.wallet, cash: item.cash, netWorth: netWorth(start.snapshot, index), strikes: item.strikes,
+      payout: usdc(expected.payouts[index]), erAtAbandon: usdc(BigInt(start.erAtAbandon[index])), erAfter: usdc(after.players[index]) })),
+    pot: usdc(entry * 3), treasuryDelta: usdc(after.treasury - BigInt(start.treasuryAtAbandon)), refusedReturningSeat: refused,
+    freshClient: fresh.publicKey.toBase58(), assertions: { ...assertions, refusedAfterIdle: true, zeroSol },
+    signatures: { setup: start.signatures, refusedRoll: refused.signature, endAndSettle: ending.signature },
+  }));
+}
+
 if (args.has('check')) await check();
+else if (args.has('execute') && args.has('abandon')) await abandon();
 else if (args.has('execute')) await execute();
-else throw new Error('Usage: smoke --check | --execute [--players N] [--target 3000] [--trades]');
+else throw new Error('Usage: smoke --check | --execute [--players N] [--target 3000] [--trades] | --execute --abandon [--resume]');

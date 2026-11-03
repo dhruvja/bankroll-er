@@ -3,12 +3,12 @@ import BN from 'bn.js';
 import { PublicKey, SystemProgram, SYSVAR_SLOT_HASHES_PUBKEY, TransactionInstruction, type AccountMeta } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from '@solana/spl-token';
 import {
-  DELEGATION_PROGRAM_ID, deriveEphemeralAta, delegateBufferPdaFromDelegatedAccountAndOwnerProgram,
+  DELEGATION_PROGRAM_ID, EPHEMERAL_SPL_TOKEN_PROGRAM_ID, deriveEphemeralAta, delegateBufferPdaFromDelegatedAccountAndOwnerProgram,
   delegationMetadataPdaFromDelegatedAccount, delegationRecordPdaFromDelegatedAccount,
 } from '@magicblock-labs/ephemeral-rollups-sdk';
 import idlJson from './idl/bankroll.json';
 import { board } from './board';
-import { DEVNET_USDC, EPHEMERAL_QUEUE, ROUTER_RPC, SHARES_BPS, VRF_PROGRAM, invariant } from './config';
+import { DEVNET_USDC, EPHEMERAL_QUEUE, PUBLIC_VALIDATOR, ROUTER_RPC, SHARES_BPS, VRF_PROGRAM, invariant } from './config';
 
 export const idl = idlJson as Idl;
 export const PROGRAM_ID = new PublicKey(idl.address);
@@ -31,6 +31,18 @@ export const tableAddress = (index: number, program = PROGRAM_ID) => {
 export const treasuryAddress = (program = PROGRAM_ID) => PublicKey.findProgramAddressSync([Buffer.from('treasury')], program)[0];
 export const tokenAddress = (owner: PublicKey) => getAssociatedTokenAddressSync(mintKey, owner, true);
 export const custodyAddress = (owner: PublicKey) => deriveEphemeralAta(owner, mintKey)[0];
+/** The delegation record of `owner`'s eATA: while it delegates to the public validator, the ER
+ * projects (and writes) the owner's canonical ATA. The program's `payable` reads it. */
+export const custodyRecordAddress = (owner: PublicKey) => delegationRecordPdaFromDelegatedAccount(custodyAddress(owner));
+
+const DELEGATION_RECORD_DISCRIMINATOR = 100n;
+/** Mirrors the program's `delegated_to_public_er` for an eATA's delegation record. */
+export function isLiveCustodyRecord(record: { owner: PublicKey; data: Buffer } | null): boolean {
+  return !!record && record.owner.equals(DELEGATION_PROGRAM_ID) && record.data.length >= 72
+    && record.data.readBigUInt64LE(0) === DELEGATION_RECORD_DISCRIMINATOR
+    && new PublicKey(record.data.subarray(8, 40)).toBase58() === PUBLIC_VALIDATOR
+    && new PublicKey(record.data.subarray(40, 72)).equals(EPHEMERAL_SPL_TOKEN_PROGRAM_ID);
+}
 
 /** Raw Anchor decode of the Table account (IDL field names, BN for 64-bit values). */
 interface RawSeat {
@@ -160,16 +172,18 @@ export function expectedPayouts(table: TableView): { payouts: number[]; treasury
 
 export type InstructionName = 'create_table' | 'delegate_table' | 'open_table' | 'join_table' | 'cancel_or_expire' | 'refund_player'
   | 'start_game' | 'roll' | 'buy' | 'pass' | 'build' | 'sell' | 'pay_bail' | 'open_trade' | 'offer_trade' | 'accept_trade'
-  | 'force_timeout' | 'settle';
+  | 'force_timeout' | 'settle' | 'withdraw_fees';
 
 /** Every account name the IDL uses, resolved for one table and one acting wallet. */
 export function accountsFor(table: PublicKey, actor: PublicKey, recipient = actor): Record<string, PublicKey> {
   const treasury = treasuryAddress();
   return {
-    admin: actor, player: actor, signer: actor, payer: actor, table,
+    admin: actor, player: actor, signer: actor, payer: actor, table, treasury,
+    admin_token: tokenAddress(actor), admin_eata: custodyAddress(actor),
     delegation_record: delegationRecordPdaFromDelegatedAccount(table),
     player_token: tokenAddress(recipient), table_token: tokenAddress(table), treasury_token: tokenAddress(treasury),
-    table_eata: custodyAddress(table), player_eata: custodyAddress(recipient), treasury_eata: custodyAddress(treasury),
+    table_eata: custodyAddress(table), player_eata: custodyAddress(recipient),
+    player_custody_record: custodyRecordAddress(recipient), treasury_eata: custodyAddress(treasury),
     token_program: TOKEN_PROGRAM_ID, system_program: SystemProgram.programId,
     oracle_queue: new PublicKey(EPHEMERAL_QUEUE), vrf_program: new PublicKey(VRF_PROGRAM), slot_hashes: SYSVAR_SLOT_HASHES_PUBKEY,
     program_identity: PublicKey.findProgramAddressSync([Buffer.from('identity')], PROGRAM_ID)[0],
@@ -193,10 +207,11 @@ export function buildInstruction(name: InstructionName, accounts: Record<string,
   return new TransactionInstruction({ programId: PROGRAM_ID, keys: [...keys, ...remaining], data: new BorshInstructionCoder(idl).encode(name, args) });
 }
 
-/** Settle's (canonical ATA, eATA) pair per seat, in seat order. */
-export const settleRemaining = (table: TableView): AccountMeta[] => table.seats.flatMap(seat => {
+/** Settle's (canonical ATA, eATA) pair per seat, in seat order. A seat's ATA is writable only when
+ * it receives money and is live (`writable[seat]`); the ER rejects writable accounts it doesn't hold. */
+export const settleRemaining = (table: TableView, writable: boolean[] = table.seats.map(() => true)): AccountMeta[] => table.seats.flatMap((seat, index) => {
   const wallet = new PublicKey(seat.wallet);
-  return [{ pubkey: tokenAddress(wallet), isSigner: false, isWritable: true }, { pubkey: custodyAddress(wallet), isSigner: false, isWritable: false }];
+  return [{ pubkey: tokenAddress(wallet), isSigner: false, isWritable: writable[index] ?? false }, { pubkey: custodyRecordAddress(wallet), isSigner: false, isWritable: false }];
 });
 
 export interface DelegationStatus { isDelegated: boolean; fqdn?: string; delegationRecord?: { authority?: string } }

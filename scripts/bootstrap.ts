@@ -1,7 +1,9 @@
 /**
- * Admin-only, idempotent pool bootstrap on base: creates and delegates Tables `--from`..`--tables`
- * (default 0..16), their USDC custody (ATA + eATA delegated to the pinned validator) and the
- * treasury custody. Rerun it to resume, or with a higher `--tables` to add tables.
+ * Admin-only, idempotent pool bootstrap on base, also run as `pnpm add-tables`: ensures Tables
+ * `--from` (default 0)..`--tables N` exist and are delegated, with their USDC custody (ATA + eATA
+ * delegated to the pinned validator) and the treasury custody, then verifies all N on the router
+ * and the ER. Existing tables are skipped, so a rerun resumes and `--tables` with the current
+ * count only re-verifies. `--tables` is required so a typo never creates a pool's worth of rent.
  */
 import { PublicKey } from '@solana/web3.js';
 import { DELEGATION_PROGRAM_ID, EPHEMERAL_SPL_TOKEN_PROGRAM_ID } from '@magicblock-labs/ephemeral-rollups-sdk';
@@ -12,7 +14,7 @@ import { DEPLOYMENT, client, flags, loadAdmin, readDeployment, requireDevnet, sa
 import { existsSync, writeFileSync } from 'node:fs';
 
 const args = flags();
-const count = Number(args.value('tables') ?? 16), from = Number(args.value('from') ?? 0);
+const count = Number(args.value('tables')), from = Number(args.value('from') ?? 0);
 invariant(Number.isInteger(count) && count > 0 && count <= 256 && Number.isInteger(from) && from >= 0 && from < count, 'Use --tables N (1-256) and --from M < N.');
 await requireDevnet();
 const admin = loadAdmin(), validator = new PublicKey(PUBLIC_VALIDATOR);
