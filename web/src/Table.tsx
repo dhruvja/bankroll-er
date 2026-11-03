@@ -37,7 +37,8 @@ function useTable(table: string) {
     const stop = subscribeTable(table, next => { lastPush = Date.now(); setConnected(true); accept(next); }, failure => setReadError(failure.message));
     const timer = setInterval(() => {
       if (Date.now() - lastPush < 4_000) return;
-      client.readTable(new PublicKey(table)).then(next => { setConnected(true); accept(next); }, () => setConnected(false));
+      const started = Date.now();
+      client.readTable(new PublicKey(table)).then(next => { setConnected(true); if (lastPush < started) accept(next); }, () => setConnected(false));
     }, 4_000);
     return () => { alive = false; stop(); clearInterval(timer); };
   }, [table]);
@@ -69,7 +70,7 @@ function useFeed(view: TableView | undefined, key: string) {
     view.board.forEach((lot, space) => {
       const was = before.board[space];
       if (was.owner === NO_OWNER && lot.owner !== NO_OWNER) added.push({ at, kind: 'buy', text: `${name(lot.owner)} bought ${board.spaces[space].name} for ${money(board.spaces[space].price ?? 0)}` });
-      else if (was.owner !== NO_OWNER && lot.owner === NO_OWNER && before.phase === 'playing' && view.phase === 'playing') added.push({ at, kind: 'sell', text: `${name(was.owner)} sold ${board.spaces[space].name}` });
+      else if (was.owner !== NO_OWNER && lot.owner === NO_OWNER && before.phase === 'playing' && view.phase === 'playing' && !view.seats[was.owner]?.eliminatedAt) added.push({ at, kind: 'sell', text: `${name(was.owner)} sold ${board.spaces[space].name}` });
       else if (was.owner !== NO_OWNER && lot.owner !== NO_OWNER && was.owner !== lot.owner) moved.push({ space, from: was.owner, to: lot.owner });
       if (lot.owner === was.owner && lot.buildings > was.buildings) added.push({ at, kind: 'build', text: `${name(lot.owner)} built on ${board.spaces[space].name} (${lot.buildings}/3)` });
     });
@@ -184,7 +185,7 @@ export function TableScreen({ table, nonce, me, signer, refresh, openWallet }: {
           : `${view.seats[turnSeat].name} puts ${board.spaces[view.trade.space].name} up for a swap. Make an offer within ${Math.max(0, Math.ceil(view.trade.deadline - now))}s.`}
       </div>}
       {timedOut && <div className="alert warn" role="status" data-testid="timed-out">This game timed out after an hour without a move. It is ending by ranking and paying out now.</div>}
-      {!timedOut && view.phase === 'playing' && idleAt - now < 600 && <div className="alert warn" role="status">No moves for {Math.floor((now - view.lastActionAt) / 60)} minutes. If nobody moves, the game ends by ranking in {clock(idleAt - now)}.</div>}
+      {!timedOut && view.phase === 'playing' && view.stage !== 'ordering' && idleAt - now < 600 && <div className="alert warn" role="status">No moves for {Math.floor((now - view.lastActionAt) / 60)} minutes. If nobody moves, the game ends by ranking in {clock(Math.max(0, idleAt - now))}.</div>}
 
       <div className="table-grid">
         <Board view={view} positions={positions} highlights={highlights} selected={selected} onSelect={space => setSelected(space === selected ? undefined : space)}>
@@ -228,7 +229,10 @@ export function TableScreen({ table, nonce, me, signer, refresh, openWallet }: {
           </PropertyCard>}
 
           {view.phase === 'playing' && seat >= 0 && <Holdings view={view} seat={seat} buildNow={myTurn && view.stage === 'preroll'} onSelect={setSelected} />}
-          {(view.phase === 'finished' || view.phase === 'free') && <Results view={view} me={me} openWallet={openWallet} />}
+          {(view.phase === 'finished' || view.phase === 'free' && view.endedAt > 0) && <Results view={view} me={me} openWallet={openWallet} />}
+          {view.phase === 'free' && !view.endedAt && <section className="panel" data-testid="refunded"><h2>Entries refunded</h2>
+            <p className="quiet">The game never started, so every entry went back to its play balance with no fee.</p>
+            <button className="btn primary" onClick={() => navigate('/')}>Back to the tables</button></section>}
           {view.phase === 'refunding' && <Refunding view={view} seat={seat} now={now} openWallet={openWallet} />}
           <Feed feed={feed} />
           <TxLog table={table} since={view.lobbyDeadline - LOBBY_SECONDS} />
@@ -255,16 +259,20 @@ function Center({ view, seat, myTurn, left, now, busy, die, card, timedOut, onRo
     </div>
   );
   if (view.phase !== 'playing') {
-    const ranked = view.seats.map((item, index) => ({ item, index, payout: view.phase === 'free' ? item.payout : expectedPayouts(view).payouts[index] })).sort((a, b) => b.payout - a.payout);
+    // Only a game that ended has a ranking; a refunded lobby may have a single seat.
+    if (!view.endedAt) return <div className="center-stack"><p className="big">No game</p><p className="quiet">The game never started, so every entry comes back in full.</p></div>;
+    const payouts = view.phase === 'free' ? view.seats.map(item => item.payout) : expectedPayouts(view).payouts;
+    const ranked = view.seats.map((item, index) => ({ item, payout: payouts[index] })).sort((a, b) => b.payout - a.payout);
     return (
       <div className="center-stack">
-        <p className="quiet">{view.phase === 'refunding' ? (view.endedAt ? 'Game over' : 'Lobby closed') : 'Game over'}</p>
-        {view.endedAt > 0 && <p className="big" data-testid="winner">{ranked[0].item.name} wins</p>}
-        {view.endedAt > 0 && <p className="mint">{usdc(ranked[0].payout)} USDC</p>}
+        <p className="quiet">Game over</p>
+        <p className="big" data-testid="winner">{ranked[0].item.name} wins</p>
+        <p className="mint">{usdc(ranked[0].payout)} USDC</p>
       </div>
     );
   }
-  const total = STAGE_SECONDS[view.stage] ?? 30, fraction = Math.min(1, left / total);
+  const offerWindow = view.stage === 'tradeoffers' && seat !== turnSeat && now < view.trade.deadline;
+  const total = offerWindow ? board.rules.deadlinesSec.tradeOffers : STAGE_SECONDS[view.stage] ?? 30, fraction = Math.min(1, left / total);
   const jailed = who.jailTurns > 0;
   const status = view.stage === 'ordering' ? 'Drawing the turn order'
     : view.stage === 'rolling' ? `${myTurn ? 'You are' : `${who.name} is`} rolling`
@@ -511,7 +519,7 @@ function Refunding({ view, seat, now, openWallet }: { view: TableView; seat: num
     <section className="panel" data-testid="refunding">
       <h2>{view.endedAt ? 'Paying out' : 'Refunding entries'}</h2>
       <p>{view.endedAt ? `The game is over. ${done} of ${view.playerCount} players have their ranked share; the rest are sent as soon as each play balance can receive it.`
-        : `This lobby closed before the game started. Every entry comes back in full, with no fee. ${done} of ${view.playerCount} returned.`}</p>
+        : `The game never started, so every entry comes back in full, with no fee. ${done} of ${view.playerCount} returned.`}</p>
       {mine && !mine.refunded && reachable === false && <p className="error" data-testid="treasury-warning">
         Your play balance can’t receive your {view.endedAt ? 'share' : 'entry'} right now. {grace > 0 ? `Reopen it within ${clock(grace)} by depositing any amount from your wallet, or it goes to the treasury.`
           : 'The grace period is over, so it can now be sent to the treasury.'} <button className="linkish" onClick={openWallet}>Open wallet</button></p>}

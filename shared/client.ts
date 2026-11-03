@@ -117,12 +117,14 @@ export class BankrollClient implements PaymentClient {
 
   /** Pushes every ER change of the table; the first snapshot is read immediately. */
   subscribeTable(address: PublicKey, onTable: (table: TableView) => void, onError: (error: Error) => void = () => {}) {
-    let closed = false;
+    let closed = false, pushed = false;
     const id = this.er.onAccountChange(address, account => {
       if (closed || !account.owner.equals(PROGRAM_ID)) return;
+      pushed = true;
       try { onTable(decodeTable(address, account.data)); } catch (error) { onError(error as Error); }
     }, { commitment: 'confirmed' });
-    void this.readTable(address).then(table => { if (!closed) onTable(table); }, error => onError(error as Error));
+    // The first snapshot is a read; drop it if a (newer) push already arrived.
+    void this.readTable(address).then(table => { if (!closed && !pushed) onTable(table); }, error => onError(error as Error));
     return () => { closed = true; void this.er.removeAccountChangeListener(id).catch(() => {}); };
   }
 
@@ -253,7 +255,11 @@ export function nextCrank(table: TableView, wallet: string, now: number): { acti
     // once now >= at + jitter, so `at: now` would never fire. Live seats are refunded at once; a seat
     // whose accounts are gone waits for the refund grace inside `refundPending`.
     case 'refunding': return table.seats.some(item => !item.refunded) ? { action: 'refund', at: table.endedAt } : undefined;
-    case 'finished': return { action: 'settle', at: table.endedAt };
+    case 'finished': {
+      // A settle that keeps failing gives way to the emergency path (each seat pulls its ranked share).
+      const emergency = Math.max(idle, table.endedAt) + rules.emergencyRefundAfterIdle;
+      return now >= emergency ? { action: 'timeout', at: emergency } : { action: 'settle', at: table.endedAt };
+    }
     case 'playing': {
       if (table.stage === 'ordering') return { action: now >= idle ? 'timeout' : 'retry-start', at: Math.min(idle, table.vrfRequestedAt + rules.vrfRetry) };
       // Past the idle deadline no player action is accepted: end by ranking and settle in one transaction.
@@ -274,12 +280,14 @@ export function nextCrank(table: TableView, wallet: string, now: number): { acti
 /** Every participant tab runs this. It fires the next liveness action once its deadline passes,
  * after 0–3 s of jitter so tabs rarely race; a lost race simply fails and re-reads. */
 export function startCrank(client: BankrollClient, address: PublicKey, signer: Signer, onSent: (sent: SentTransaction) => void = () => {}, jitterMs = 3_000) {
-  let table: TableView | undefined, busy = false, stopped = false;
+  // `handled` is the snapshot an action already succeeded on: wait for the next one instead of resending.
+  // `quietUntil` backs off a refund pass that had nothing to send (gone seats wait for the grace).
+  let table: TableView | undefined, handled: TableView | undefined, quietUntil = 0, busy = false, stopped = false;
   const unsubscribe = client.subscribeTable(address, next => { table = next; });
   const timer = setInterval(() => {
-    if (busy || stopped || !table) return;
+    if (busy || stopped || !table || table === handled) return;
     const now = Date.now() / 1000, step = nextCrank(table, signer.publicKey.toBase58(), now);
-    if (!step || now < step.at + Math.random() * jitterMs / 1000) return;
+    if (!step || now < quietUntil || now < step.at + Math.random() * jitterMs / 1000) return;
     busy = true;
     const view = table, action = step.action;
     const send = action === 'timeout' ? client.forceTimeout(address, signer)
@@ -289,7 +297,9 @@ export function startCrank(client: BankrollClient, address: PublicKey, signer: S
       : action === 'settle' ? client.settle(address, signer, view)
       : action === 'expire' ? client.cancel(address, signer)
       : client.refundPending(address, signer, view, now).then(sent => sent[0]);
-    void send.then(sent => { if (sent) onSent(sent); }, () => {}).finally(() => { busy = false; });
+    void send.then(sent => {
+      if (sent) { handled = view; onSent(sent); } else if (action === 'refund') quietUntil = Math.max(now + 10, Math.min(view.stageDeadline, now + 60));
+    }, () => {}).finally(() => { busy = false; });
   }, 500);
   return () => { stopped = true; clearInterval(timer); unsubscribe(); };
 }
