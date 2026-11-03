@@ -130,10 +130,12 @@ test('the crank picks the liveness action each participant may send and when', a
   }
   assert.deepEqual(nextCrank({ ...view, stage: 'ordering' }, me, 1000 + rules.idle)?.action, 'timeout', 'no turn order: the timeout refunds');
   assert.deepEqual(nextCrank({ ...view, stage: 'ordering', vrfRequestedAt: 1000 }, me, 1001), { action: 'retry-start', at: 1000 + rules.vrfRetry });
-  assert.deepEqual(nextCrank({ ...view, phase: 'finished' }, me, 5), { action: 'settle', at: 5 });
+  // A due action must carry a fixed past time: `startCrank` fires once now >= at + jitter, so `at: now` would never fire.
+  assert.deepEqual(nextCrank({ ...view, phase: 'finished', endedAt: 900 }, me, 1000), { action: 'settle', at: 900 }, 'settle is due from the end');
   assert.deepEqual(nextCrank({ ...view, phase: 'lobby', lobbyDeadline: 1600 }, me, 5), { action: 'expire', at: 1600 });
   const refunding = { ...view, phase: 'refunding' as const, seats: view.seats.map((seat, index) => ({ ...seat, refunded: index === 0 })) };
-  assert.deepEqual(nextCrank(refunding, me, 7), { action: 'refund', at: 7 });
+  assert.deepEqual(nextCrank({ ...refunding, endedAt: 0 }, me, 7), { action: 'refund', at: 0 }, 'a lobby refund is due at once');
+  assert.deepEqual(nextCrank({ ...refunding, endedAt: 900 }, me, 1000), { action: 'refund', at: 900 }, 'a finished game refunds from its end');
   assert.equal(nextCrank({ ...refunding, seats: refunding.seats.map(seat => ({ ...seat, refunded: true })) }, me, 7), undefined);
   assert.equal(nextCrank({ ...view, phase: 'free' }, me, 7), undefined);
   const offers = { ...view, stage: 'tradeoffers' as const, stageDeadline: 1035, trade: { space: 1, offers: [0, 0, 0], deadline: 1020 } };

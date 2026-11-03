@@ -249,9 +249,11 @@ export function nextCrank(table: TableView, wallet: string, now: number): { acti
   const idle = table.lastActionAt + rules.idle;
   switch (table.phase) {
     case 'lobby': return { action: 'expire', at: table.lobbyDeadline };
-    // Live seats are refunded at once; a seat whose accounts are gone waits for the refund grace.
-    case 'refunding': return table.seats.some(item => !item.refunded) ? { action: 'refund', at: now } : undefined;
-    case 'finished': return { action: 'settle', at: now };
+    // Due actions carry a fixed past time (the game's end, or 0 for a lobby refund): the crank fires
+    // once now >= at + jitter, so `at: now` would never fire. Live seats are refunded at once; a seat
+    // whose accounts are gone waits for the refund grace inside `refundPending`.
+    case 'refunding': return table.seats.some(item => !item.refunded) ? { action: 'refund', at: table.endedAt } : undefined;
+    case 'finished': return { action: 'settle', at: table.endedAt };
     case 'playing': {
       if (table.stage === 'ordering') return { action: now >= idle ? 'timeout' : 'retry-start', at: Math.min(idle, table.vrfRequestedAt + rules.vrfRetry) };
       // Past the idle deadline no player action is accepted: end by ranking and settle in one transaction.
