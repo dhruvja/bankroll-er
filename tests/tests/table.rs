@@ -73,7 +73,9 @@ fn set_token(svm: &mut LiteSVM, owner: Address, mint: Address, amount: u64, froz
     set_custody(svm, owner);
 }
 fn balance(svm: &LiteSVM, owner: Address) -> u64 {
-    TokenAccount::unpack(&svm.get_account(&ata(owner)).unwrap().data).unwrap().amount
+    svm.get_account(&ata(owner))
+        .filter(|account| !account.data.is_empty())
+        .map_or(0, |account| TokenAccount::unpack(&account.data).unwrap().amount)
 }
 
 struct Harness {
@@ -238,8 +240,13 @@ impl Harness {
         }
         table.phase = TablePhase::Finished;
         table.stage = Stage::Idle;
+        table.ended_at = table.last_action_at;
         self.write(&table);
     }
+}
+
+fn close(svm: &mut LiteSVM, address: Address) {
+    svm.set_account(address, Account::default()).unwrap();
 }
 
 fn die(value: u8) -> [u8; 32] {
@@ -375,6 +382,7 @@ fn substituted_custody_recipient_treasury_or_mint_cannot_take_funds() {
 
     let mut table = h.read();
     table.phase = TablePhase::Refunding;
+    table.seats[0].payout = 2_010_000;
     h.write(&table);
     set_token(&mut h.svm, first, USDC_MINT, 0, false);
     let mut refund = h.refund_ix(0);
@@ -525,7 +533,7 @@ fn a_reused_table_carries_no_state_from_the_previous_game() {
 }
 
 #[test]
-fn emergency_refund_returns_every_entry_when_settle_keeps_failing() {
+fn emergency_refund_pays_ranked_shares_when_settle_keeps_failing() {
     let mut h = Harness::new();
     h.playing(3, 3000);
     h.finish(&[3500, 2000, 1000]);
@@ -540,13 +548,34 @@ fn emergency_refund_returns_every_entry_when_settle_keeps_failing() {
     h.clock(last + 3600 + 1800);
     h.action(1, bankroll::instruction::ForceTimeout {}).unwrap();
     assert_eq!(h.read().phase, TablePhase::Refunding);
-    assert!(h.send(&[], settle).is_err(), "no payout after the emergency switch");
-    for seat in 0..3u8 {
+    assert!(h.send(&[], settle).is_err(), "no settle after the emergency switch");
+    // The zero-payout seat's token accounts are gone; its refund still marks it so the table frees.
+    let loser = h.wallet(2);
+    close(&mut h.svm, ata(loser));
+    close(&mut h.svm, custody_address(loser));
+    for (seat, expected) in [(0u8, 2_010_000), (1, 900_000), (2, 0)] {
         let refund = h.refund_ix(seat);
-        h.send(&[], refund).unwrap();
-        assert_eq!(balance(&h.svm, h.wallet(seat as usize)), USDC);
+        h.send(&[], refund.clone()).unwrap();
+        assert!(h.send(&[], refund).is_err(), "double refund");
+        assert_eq!(balance(&h.svm, h.wallet(seat as usize)), expected, "ranked share, never the entry");
     }
+    assert_eq!(balance(&h.svm, h.table), 90_000, "the fee waits in custody for the next settle");
+    assert_eq!(balance(&h.svm, h.treasury), 0);
+    assert_eq!(h.read().phase, TablePhase::Free);
+}
+
+#[test]
+fn a_losing_seat_cannot_block_settle_by_closing_its_token_accounts() {
+    let mut h = Harness::new();
+    h.playing(2, 3000);
+    h.finish(&[3500, 1000]);
+    let loser = h.wallet(1);
+    close(&mut h.svm, ata(loser));
+    close(&mut h.svm, custody_address(loser));
+    let settle = h.settle_ix();
+    h.send(&[], settle).unwrap();
+    assert_eq!(balance(&h.svm, h.wallet(0)), 1_940_000);
+    assert_eq!(balance(&h.svm, h.treasury), 60_000);
     assert_eq!(balance(&h.svm, h.table), 0);
-    assert_eq!(balance(&h.svm, h.treasury), 0, "no fee on a refund");
     assert_eq!(h.read().phase, TablePhase::Free);
 }

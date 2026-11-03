@@ -65,11 +65,11 @@ fn lobby_validates_config_nonce_capacity_and_refunds_free_the_table() {
     assert!(free.cancel_or_expire(w[1], T0 + LOBBY_SECONDS - 1).is_err());
     free.cancel_or_expire(w[1], T0 + LOBBY_SECONDS).unwrap();
     assert_eq!(free.phase, TablePhase::Refunding);
-    assert_eq!(free.refund(1).unwrap(), w[1]);
+    assert_eq!(free.refund(1).unwrap(), (w[1], free.entry), "an unfinished game refunds the entry");
     assert!(free.refund(1).is_err());
     assert!(free.refund(2).is_err());
     assert_eq!(free.phase, TablePhase::Refunding);
-    assert_eq!(free.refund(0).unwrap(), w[0]);
+    assert_eq!(free.refund(0).unwrap(), (w[0], free.entry));
     assert_eq!(free.phase, TablePhase::Free);
 
     let mut expired = lobby(2, 3000);
@@ -282,19 +282,26 @@ fn idle_deadline_ends_by_ranking_before_stage_timeouts_then_emergency_refund() {
     assert!(table.seats.iter().all(|seat| seat.strikes == 0), "nobody is struck at the idle deadline");
     assert!(table.payouts().unwrap()[2] == 2_010_000);
     assert!(table.force_timeout(idle + EMERGENCY_SECONDS - 1).is_err());
+    let ranked = table.payouts().unwrap();
     table.force_timeout(idle + EMERGENCY_SECONDS).unwrap();
     assert_eq!(table.phase, TablePhase::Refunding);
     for seat in 0..3 {
-        table.refund(seat).unwrap();
+        let (wallet, amount) = table.refund(seat).unwrap();
+        assert_eq!((wallet, amount), (wallets()[seat], ranked[seat]), "a finished game refunds its ranked payout");
     }
     assert_eq!(table.phase, TablePhase::Free);
 
+    // A table nobody touched until long after the idle deadline still ends by ranking.
     let mut stuck = playing(2, 3000);
     stuck.roll(wallets()[0], T0 + 11).unwrap();
     assert_eq!(stuck.stage, Stage::Rolling);
-    stuck.force_timeout(T0 + 11 + IDLE_SECONDS + EMERGENCY_SECONDS).unwrap();
-    assert_eq!((stuck.phase, stuck.vrf_purpose), (TablePhase::Refunding, VrfPurpose::None));
-    assert!(stuck.consume_randomness(die(1), stuck.vrf_nonce, T0).is_err(), "late callback after refund");
+    let late = T0 + 11 + IDLE_SECONDS + EMERGENCY_SECONDS;
+    stuck.force_timeout(late).unwrap();
+    assert_eq!((stuck.phase, stuck.vrf_purpose, stuck.ended_at), (TablePhase::Finished, VrfPurpose::None, late));
+    assert!(stuck.consume_randomness(die(1), stuck.vrf_nonce, T0).is_err(), "late callback after the end");
+    assert!(stuck.force_timeout(late + EMERGENCY_SECONDS - 1).is_err(), "settle always gets a full window after the end");
+    stuck.force_timeout(late + EMERGENCY_SECONDS).unwrap();
+    assert_eq!(stuck.phase, TablePhase::Refunding);
 
     let mut unordered = lobby(2, 3000);
     unordered.start(wallets()[0], T0).unwrap();
@@ -323,9 +330,13 @@ fn vrf_callbacks_need_the_pending_nonce_and_retries_bump_it() {
     table.roll(wallets()[0], T0 + 30).unwrap();
     assert!(table.roll(wallets()[0], T0 + 31).is_err(), "retry waits for the VRF timeout");
     let stale = table.vrf_nonce;
-    table.roll(wallets()[1], T0 + 30 + VRF_RETRY_SECONDS).unwrap();
+    assert!(table.roll(wallets()[1], T0 + 30 + OTHER_SEAT_RETRY_SECONDS - 1).is_err(), "others wait longer");
+    table.roll(wallets()[0], T0 + 30 + VRF_RETRY_SECONDS).unwrap();
     assert!(table.consume_randomness(die(3), stale, T0 + 50).is_err());
-    table.consume_randomness(die(3), stale + 1, T0 + 50).unwrap();
+    let stale = table.vrf_nonce;
+    table.roll(wallets()[1], T0 + 30 + VRF_RETRY_SECONDS + OTHER_SEAT_RETRY_SECONDS).unwrap();
+    assert!(table.consume_randomness(die(3), stale, T0 + 120).is_err());
+    table.consume_randomness(die(3), stale + 1, T0 + 120).unwrap();
     assert_eq!(table.seats[0].position, 3, "the retry still moves the current seat");
 }
 

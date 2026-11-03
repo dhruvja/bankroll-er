@@ -671,7 +671,9 @@
     {
       "name": "refund_player",
       "docs": [
-        "Returns one full entry, with no fee, from a Refunding table."
+        "Returns one seat's money from a Refunding table: the full entry with no fee, or the ranked",
+        "payout when the game had finished. A zero refund only marks the seat, so a seat whose",
+        "token accounts are gone cannot keep the table from returning to Free."
       ],
       "discriminator": [
         251,
@@ -719,6 +721,9 @@
         },
         {
           "name": "player_token",
+          "docs": [
+            "refund is nonzero, so a closed account cannot block a zero refund."
+          ],
           "writable": true
         },
         {
@@ -828,7 +833,8 @@
       "docs": [
         "Pays every ranked share from table custody in one transaction, sweeps the fee, dust and",
         "any stray deposit to the treasury, requires custody to end at zero and frees the table.",
-        "`remaining_accounts` holds (canonical ATA, eATA) for every seat, in seat order."
+        "`remaining_accounts` holds (canonical ATA, eATA) for every seat, in seat order; only paid",
+        "seats' accounts are read, so a seat with nothing to receive cannot block settlement."
       ],
       "discriminator": [
         175,

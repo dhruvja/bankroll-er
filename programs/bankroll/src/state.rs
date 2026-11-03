@@ -7,6 +7,8 @@ pub const NAME_LEN: usize = 16;
 pub const NO_OWNER: u8 = u8::MAX;
 pub const LOBBY_SECONDS: i64 = 600;
 pub const FEE_BPS: u64 = 300;
+/// How long a seat that isn't rolling waits before it may re-request a missing roll.
+pub const OTHER_SEAT_RETRY_SECONDS: i64 = 3 * crate::board::VRF_RETRY_SECONDS;
 /// Ranked shares in bps of the pot, indexed by `player_count - 2`. The 2-player row (9700 to the
 /// winner) was confirmed by the user on 2026-11-03. Every row plus the fee sums to 10,000.
 pub const SHARES_BPS: [[u64; 3]; 3] = [[9700, 0, 0], [6700, 3000, 0], [6000, 2700, 1000]];

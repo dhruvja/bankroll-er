@@ -5,7 +5,7 @@ import { DELEGATION_PROGRAM_ID, EPHEMERAL_SPL_TOKEN_PROGRAM_ID } from '@magicblo
 import { BASE_RPC, DEVNET_GENESIS, ER_RPC, PUBLIC_VALIDATOR, invariant } from './config';
 import {
   PHASE_OFFSET, PROGRAM_ID, accountsFor, buildInstruction, custodyAddress, decodeTable, delegationStatus, idl,
-  isActive, mintKey, settleRemaining, tableAddress, tokenAddress, u64, type TableView,
+  currentSeat, isActive, mintKey, settleRemaining, tableAddress, tokenAddress, u64, type TableView,
 } from './chain';
 import { board } from './board';
 import type { PaymentClient } from './sponsored';
@@ -204,7 +204,9 @@ export function nextCrank(table: TableView, wallet: string, now: number): { acti
       if (table.stage === 'ordering') return { action: now >= idle ? 'timeout' : 'retry-start', at: Math.min(idle, table.vrfRequestedAt + rules.vrfRetry) };
       if (table.stage === 'rolling') {
         if (now >= idle) return { action: 'timeout', at: idle };
-        return isActive(table, seat) ? { action: 'retry-roll', at: table.vrfRequestedAt + rules.vrfRetry } : { action: 'timeout', at: idle };
+        // Mirrors OTHER_SEAT_RETRY_SECONDS: seats that aren't rolling wait three VRF retry windows.
+        const wait = seat === currentSeat(table) ? rules.vrfRetry : 3 * rules.vrfRetry;
+        return isActive(table, seat) ? { action: 'retry-roll', at: table.vrfRequestedAt + wait } : { action: 'timeout', at: idle };
       }
       return { action: 'timeout', at: Math.min(idle, table.stageDeadline) };
     }

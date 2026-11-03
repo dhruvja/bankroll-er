@@ -8,7 +8,7 @@ import BN from 'bn.js';
 import { Keypair, PublicKey } from '@solana/web3.js';
 import { BOARD_SHA256, board, defaultTarget } from '../../shared/board';
 import {
-  NO_OWNER, PROGRAM_ID, accountsFor, buildInstruction, custodyAddress, decodeTable, expectedPayouts, idl, netWorth,
+  NO_OWNER, PROGRAM_ID, accountsFor, buildInstruction, currentSeat, custodyAddress, decodeTable, expectedPayouts, idl, netWorth,
   settleRemaining, tableAddress, tokenAddress, type TableView,
 } from '../../shared/chain';
 import { nextCrank } from '../../shared/client';
@@ -99,7 +99,9 @@ test('the crank picks the liveness action each participant may send and when', a
   const me = view.seats[1].wallet, rules = board.rules.deadlinesSec;
   assert.equal(nextCrank(view, Keypair.generate().publicKey.toBase58(), 1000), undefined, 'outsiders do not crank');
   assert.deepEqual(nextCrank(view, me, 1000), { action: 'timeout', at: 1030 });
-  assert.deepEqual(nextCrank({ ...view, stage: 'rolling', vrfRequestedAt: 1010 }, me, 1000), { action: 'retry-roll', at: 1010 + rules.vrfRetry });
+  assert.notEqual(currentSeat(view), 1);
+  assert.deepEqual(nextCrank({ ...view, stage: 'rolling', vrfRequestedAt: 1010 }, me, 1000), { action: 'retry-roll', at: 1010 + 3 * rules.vrfRetry });
+  assert.deepEqual(nextCrank({ ...view, stage: 'rolling', vrfRequestedAt: 1010, order: [1, 0, 2, 3] }, me, 1000), { action: 'retry-roll', at: 1010 + rules.vrfRetry });
   assert.deepEqual(nextCrank({ ...view, stage: 'rolling' }, me, 1000 + rules.idle), { action: 'timeout', at: 1000 + rules.idle });
   assert.deepEqual(nextCrank({ ...view, stage: 'ordering', vrfRequestedAt: 1000 }, me, 1001), { action: 'retry-start', at: 1000 + rules.vrfRetry });
   assert.deepEqual(nextCrank({ ...view, phase: 'finished' }, me, 5), { action: 'settle', at: 5 });

@@ -156,18 +156,23 @@ impl Table {
         Ok(())
     }
 
-    /// Marks one entry refunded and returns its wallet; the last refund frees the table.
-    pub fn refund(&mut self, index: usize) -> Result<Pubkey> {
+    /// Marks one seat refunded and returns its wallet and amount; the last refund frees the table.
+    /// A game that never finished returns the full entry. A finished game whose settle kept
+    /// failing returns the ranked payout recorded at the emergency, so blocking settle gains
+    /// nothing; its fee stays in custody and the table's next settle sweeps it to the treasury.
+    pub fn refund(&mut self, index: usize) -> Result<(Pubkey, u64)> {
         require!(self.phase == TablePhase::Refunding, GameError::InvalidPhase);
         require!(index < self.count(), GameError::InvalidAccount);
+        let finished = self.ended_at != 0;
+        let entry = self.entry;
         let seat = &mut self.seats[index];
         require!(!seat.refunded, GameError::AlreadyRefunded);
         seat.refunded = true;
-        let wallet = seat.wallet;
+        let refund = (seat.wallet, if finished { seat.payout } else { entry });
         if self.seats[..self.count()].iter().all(|seat| seat.refunded) {
             self.phase = TablePhase::Free;
         }
-        Ok(wallet)
+        Ok(refund)
     }
 
     /// Host starts the game, or any seated wallet re-requests a turn order that never arrived.
@@ -194,7 +199,8 @@ impl Table {
         Ok(())
     }
 
-    /// The current seat rolls, or any active seat re-requests a roll whose callback never came.
+    /// The current seat rolls, or re-requests a roll whose callback never came. Other active seats
+    /// may retry only after a longer wait, so they cannot void a slow but valid roll in flight.
     pub fn roll(&mut self, caller: Pubkey, now: i64) -> Result<()> {
         require!(self.phase == TablePhase::Playing, GameError::InvalidPhase);
         let seat = self.seat_of(&caller).ok_or(GameError::Unauthorized)?;
@@ -202,10 +208,12 @@ impl Table {
             Stage::PreRoll => require!(seat == self.current_seat(), GameError::Unauthorized),
             Stage::Rolling => {
                 require!(self.is_active(seat), GameError::Unauthorized);
-                require!(
-                    now >= self.vrf_requested_at + VRF_RETRY_SECONDS,
-                    GameError::TooEarly
-                );
+                let wait = if seat == self.current_seat() {
+                    VRF_RETRY_SECONDS
+                } else {
+                    OTHER_SEAT_RETRY_SECONDS
+                };
+                require!(now >= self.vrf_requested_at + wait, GameError::TooEarly);
             }
             _ => return err!(GameError::InvalidStage),
         }
@@ -339,10 +347,13 @@ impl Table {
     pub fn force_timeout(&mut self, now: i64) -> Result<()> {
         let idle_at = self.last_action_at + IDLE_SECONDS;
         match self.phase {
-            TablePhase::Playing | TablePhase::Finished if now >= idle_at + EMERGENCY_SECONDS => {
+            // Settle keeps failing: each seat pulls its ranked payout through refund_player instead.
+            TablePhase::Finished if now >= idle_at.max(self.ended_at) + EMERGENCY_SECONDS => {
+                let payouts = self.payouts()?;
+                for (seat, payout) in self.seats.iter_mut().zip(payouts) {
+                    seat.payout = payout;
+                }
                 self.phase = TablePhase::Refunding;
-                self.stage = Stage::Idle;
-                self.vrf_purpose = VrfPurpose::None;
             }
             TablePhase::Playing if now >= idle_at => {
                 if self.stage == Stage::Ordering {

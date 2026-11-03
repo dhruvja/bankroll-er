@@ -90,23 +90,34 @@ pub mod bankroll {
             .cancel_or_expire(ctx.accounts.signer.key(), Clock::get()?.unix_timestamp)
     }
 
-    /// Returns one full entry, with no fee, from a Refunding table.
+    /// Returns one seat's money from a Refunding table: the full entry with no fee, or the ranked
+    /// payout when the game had finished. A zero refund only marks the seat, so a seat whose
+    /// token accounts are gone cannot keep the table from returning to Free.
     pub fn refund_player(ctx: Context<RefundPlayer>, seat: u8) -> Result<()> {
         require_public_er(&ctx.accounts.delegation_record)?;
-        let wallet = ctx.accounts.table.refund(seat as usize)?;
-        let player_token = &ctx.accounts.player_token;
-        require_keys_eq!(player_token.owner, wallet, GameError::InvalidAccount);
+        let (wallet, amount) = ctx.accounts.table.refund(seat as usize)?;
+        if amount == 0 {
+            return Ok(());
+        }
+        let player_token = ctx.accounts.player_token.to_account_info();
+        require_keys_eq!(*player_token.owner, Token::id(), GameError::InvalidAccount);
+        let destination = TokenAccount::try_deserialize(&mut &player_token.try_borrow_data()?[..])?;
+        require_keys_eq!(destination.mint, USDC_MINT, GameError::InvalidAccount);
+        require_keys_eq!(destination.owner, wallet, GameError::InvalidAccount);
         require_keys_eq!(
             player_token.key(),
             get_associated_token_address(&wallet, &USDC_MINT),
             GameError::InvalidAccount
         );
+        let player_eata = &ctx.accounts.player_eata;
+        require_keys_eq!(player_eata.key(), custody_address(wallet), GameError::InvalidAccount);
+        require_keys_eq!(*player_eata.owner, ESPL_TOKEN_PROGRAM_ID, GameError::InvalidAccount);
         transfer_from_table(
             &ctx.accounts.table,
             &ctx.accounts.table_token,
-            player_token.to_account_info(),
+            player_token.clone(),
             &ctx.accounts.token_program,
-            ctx.accounts.table.entry,
+            amount,
         )
     }
 
@@ -162,7 +173,8 @@ pub mod bankroll {
 
     /// Pays every ranked share from table custody in one transaction, sweeps the fee, dust and
     /// any stray deposit to the treasury, requires custody to end at zero and frees the table.
-    /// `remaining_accounts` holds (canonical ATA, eATA) for every seat, in seat order.
+    /// `remaining_accounts` holds (canonical ATA, eATA) for every seat, in seat order; only paid
+    /// seats' accounts are read, so a seat with nothing to receive cannot block settlement.
     pub fn settle<'info>(ctx: Context<'info, Settle<'info>>) -> Result<()> {
         require_public_er(&ctx.accounts.delegation_record)?;
         let payouts = ctx.accounts.table.payouts()?;
@@ -180,6 +192,9 @@ pub mod bankroll {
             .zip(payouts)
             .zip(remaining.chunks(2))
         {
+            if payout == 0 {
+                continue;
+            }
             let destination = Account::<TokenAccount>::try_from(&pair[0])?;
             require_keys_eq!(destination.mint, USDC_MINT, GameError::InvalidAccount);
             require_keys_eq!(destination.owner, seat.wallet, GameError::InvalidAccount);
@@ -194,15 +209,13 @@ pub mod bankroll {
                 GameError::InvalidAccount
             );
             require_keys_eq!(*pair[1].owner, ESPL_TOKEN_PROGRAM_ID, GameError::InvalidAccount);
-            if payout > 0 {
-                transfer_from_table(
-                    &ctx.accounts.table,
-                    &ctx.accounts.table_token,
-                    pair[0].clone(),
-                    &ctx.accounts.token_program,
-                    payout,
-                )?;
-            }
+            transfer_from_table(
+                &ctx.accounts.table,
+                &ctx.accounts.table_token,
+                pair[0].clone(),
+                &ctx.accounts.token_program,
+                payout,
+            )?;
             paid = paid.checked_add(payout).ok_or(GameError::Overflow)?;
         }
         transfer_from_table(
@@ -367,13 +380,14 @@ pub struct RefundPlayer<'info> {
     pub delegation_record: UncheckedAccount<'info>,
     #[account(mut, address = get_associated_token_address(&table.key(), &USDC_MINT), token::mint = USDC_MINT, token::authority = table)]
     pub table_token: Box<Account<'info, TokenAccount>>,
-    #[account(mut, token::mint = USDC_MINT)]
-    pub player_token: Box<Account<'info, TokenAccount>>,
+    /// CHECK: The seat's canonical USDC ATA; read and validated in the handler only when the
+    /// refund is nonzero, so a closed account cannot block a zero refund.
+    #[account(mut)]
+    pub player_token: UncheckedAccount<'info>,
     /// CHECK: Canonical public table custody on the ER.
     #[account(address = custody_address(table.key()), owner = ESPL_TOKEN_PROGRAM_ID)]
     pub table_eata: UncheckedAccount<'info>,
-    /// CHECK: Canonical public refund destination custody on the same ER.
-    #[account(address = custody_address(player_token.owner), owner = ESPL_TOKEN_PROGRAM_ID)]
+    /// CHECK: The seat's canonical public custody; validated in the handler with player_token.
     pub player_eata: UncheckedAccount<'info>,
     pub token_program: Program<'info, Token>,
 }

@@ -135,7 +135,7 @@ function TableScreen({ table, nonce, me, signer, refresh }: { table: string; non
         </div>
       )}
       {(view.phase === 'finished' || view.phase === 'free') && <Results view={view} />}
-      {view.phase === 'refunding' && <p>Refunding every entry in full, with no fee. {view.seats.filter(item => item.refunded).length}/{view.playerCount} returned.</p>}
+      {view.phase === 'refunding' && <p>{view.endedAt ? 'Settlement failed, so each player collects their ranked share directly.' : 'Refunding every entry in full, with no fee.'} {view.seats.filter(item => item.refunded).length}/{view.playerCount} returned.</p>}
       {error && <p className="error">{error}</p>}
     </section>
   );
