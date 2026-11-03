@@ -810,3 +810,216 @@ fn rejected_actions_never_mutate_the_table() {
     assert!(table.join(w[3], name("late"), table.game_nonce, T0 + 1).is_err());
     assert_eq!(table, before);
 }
+
+// ---- Phase 04: Auction-space trading ----
+
+const AUCTION: u8 = 12;
+
+/// Seat 0 rolls `value` from `from` (10 + 2 or 6 + 6 reach the Auction space) after `holdings`
+/// (space, owner) are placed.
+fn auction(players: usize, target: u64, from: u8, value: u8, holdings: &[(usize, u8)]) -> Table {
+    let mut table = playing(players, target);
+    for &(space, owner) in holdings {
+        table.board[space].owner = owner;
+    }
+    table.seats[0].position = from;
+    roll(&mut table, value, T0 + 1);
+    table
+}
+
+/// Seat 0 holds Athens (Brown) and Seoul (Orange); seat 1 holds Lisbon (Brown) and Railway;
+/// seat 2 holds Berlin (Orange).
+const HOLDINGS: [(usize, u8); 5] = [(2, 0), (14, 0), (1, 1), (4, 1), (17, 2)];
+
+#[test]
+fn a_trade_opens_takes_replaceable_offers_and_the_accepted_swap_completes_a_group() {
+    let w = wallets();
+    let mut table = auction(3, 7000, 10, 2, &HOLDINGS);
+    assert_eq!(table.seats[0].position, AUCTION);
+    assert_eq!((table.stage, table.stage_deadline), (Stage::TradeOpen, T0 + 1 + TRADE_OPEN_SECONDS));
+    let before = table.clone();
+    assert!(table.open_trade(w[1], 1, T0 + 2).is_err(), "only the lander opens");
+    assert!(table.open_trade(w[0], 1, T0 + 2).is_err(), "not the lander's property");
+    assert!(table.offer_trade(w[1], 1, T0 + 2).is_err(), "no offers before the trade opens");
+    table.board[14].buildings = 1;
+    assert!(table.open_trade(w[0], 14, T0 + 2).is_err(), "a built property cannot be traded");
+    table.board[14].buildings = 0;
+    assert_eq!(table, before);
+
+    table.open_trade(w[0], 14, T0 + 2).unwrap();
+    assert_eq!(table.stage, Stage::TradeOffers);
+    assert_eq!(table.trade, Trade { space: 14, offers: [NO_OFFER; MAX_SEATS], deadline: T0 + 2 + TRADE_OFFER_SECONDS });
+    assert_eq!(table.stage_deadline, T0 + 2 + TRADE_OFFER_SECONDS + TRADE_DECISION_SECONDS);
+    let before = table.clone();
+    assert!(table.offer_trade(w[0], 2, T0 + 3).is_err(), "the lander cannot offer to itself");
+    assert!(table.offer_trade(w[1], 17, T0 + 3).is_err(), "not the offerer's property");
+    assert!(table.offer_trade(w[3], 1, T0 + 3).is_err(), "a stranger cannot offer");
+    assert!(table.accept_trade(w[0], 1, 1, T0 + 3).is_err(), "nothing offered yet");
+    assert_eq!(table, before);
+
+    table.offer_trade(w[1], 4, T0 + 3).unwrap();
+    table.offer_trade(w[1], 1, T0 + 4).unwrap();
+    table.offer_trade(w[2], 17, T0 + 4).unwrap();
+    assert_eq!(table.trade.offers, [NO_OFFER, 1, 17, NO_OFFER], "seat 1 replaced Railway with Lisbon");
+    let before = table.clone();
+    assert!(table.accept_trade(w[0], 1, 4, T0 + 5).is_err(), "the replaced offer is gone");
+    assert!(table.accept_trade(w[1], 1, 1, T0 + 5).is_err(), "only the lander accepts");
+    assert!(table.accept_trade(w[0], 0, NO_OFFER, T0 + 5).is_err());
+    assert!(table.accept_trade(w[0], 9, 1, T0 + 5).is_err());
+    assert_eq!(table, before);
+
+    let cash = [table.seats[0].cash, table.seats[1].cash, table.seats[2].cash];
+    table.accept_trade(w[0], 1, 1, T0 + 5).unwrap();
+    assert_eq!((table.board[1].owner, table.board[14].owner, table.board[17].owner), (0, 1, 2));
+    assert!(table.owns_group(0, 1), "Lisbon completes seat 0's Brown group");
+    assert_eq!(
+        [table.seats[0].cash, table.seats[1].cash, table.seats[2].cash],
+        [cash[0] + TRADE_BONUS, cash[1] + TRADE_BONUS, cash[2]],
+        "only the two sides get the bonus"
+    );
+    assert_eq!(table.trade, Trade::default());
+    assert_eq!((table.turn, table.stage, table.last_action_at), (1, Stage::PreRoll, T0 + 5));
+}
+
+#[test]
+fn pass_skips_or_cancels_a_trade_and_a_six_keeps_its_extra_roll() {
+    let w = wallets();
+    let mut table = auction(3, 7000, 10, 2, &HOLDINGS);
+    table.pass(w[0], T0 + 2).unwrap();
+    assert_eq!((table.turn, table.stage, table.trade), (1, Stage::PreRoll, Trade::default()));
+
+    let mut table = auction(3, 7000, 6, 6, &HOLDINGS);
+    assert_eq!(table.stage, Stage::TradeOpen);
+    table.open_trade(w[0], 14, T0 + 2).unwrap();
+    table.offer_trade(w[1], 1, T0 + 3).unwrap();
+    assert!(table.pass(w[1], T0 + 4).is_err(), "only the lander cancels");
+    table.pass(w[0], T0 + 4).unwrap();
+    assert_eq!((table.board[1].owner, table.board[14].owner), (1, 0), "a cancelled trade swaps nothing");
+    assert_eq!(table.trade, Trade::default());
+    assert_eq!((table.turn, table.stage, table.rolls_this_turn), (0, Stage::PreRoll, 1), "the 6 still rolls again");
+}
+
+#[test]
+fn trade_open_is_skipped_without_an_unbuilt_property_on_both_sides() {
+    // The lander owns nothing.
+    let table = auction(3, 7000, 10, 2, &[(1, 1)]);
+    assert_eq!((table.seats[0].position, table.turn, table.stage), (AUCTION, 1, Stage::PreRoll));
+    // The lander's only property is built.
+    let mut table = playing(3, 7000);
+    table.board[1] = Lot { owner: 0, buildings: 1 };
+    table.board[2] = Lot { owner: 0, buildings: 1 };
+    table.board[4].owner = 1;
+    table.seats[0].position = 10;
+    roll(&mut table, 2, T0 + 1);
+    assert_eq!((table.turn, table.stage), (1, Stage::PreRoll));
+    // Nobody else could offer: seat 1 is built out and seat 2 owns nothing.
+    let mut table = playing(3, 7000);
+    table.board[4].owner = 0;
+    table.board[19] = Lot { owner: 1, buildings: 2 };
+    table.board[20] = Lot { owner: 1, buildings: 2 };
+    table.seats[0].position = 10;
+    roll(&mut table, 2, T0 + 1);
+    assert_eq!((table.turn, table.stage), (1, Stage::PreRoll));
+    // A Lucky move card onto the Auction space opens a trade too (card 10 from Lucky 9).
+    let mut table = playing(3, 7000);
+    for &(space, owner) in &HOLDINGS {
+        table.board[space].owner = owner;
+    }
+    table.seats[0].position = 6;
+    table.roll(wallets()[0], T0 + 1).unwrap();
+    table.consume_randomness(die_and_card(3, 10), table.vrf_nonce, T0 + 1).unwrap();
+    assert_eq!((table.seats[0].position, table.last_card, table.stage), (AUCTION, 10, Stage::TradeOpen));
+}
+
+#[test]
+fn the_trade_bonus_can_reach_the_target_and_end_the_game() {
+    let w = wallets();
+    let mut table = auction(3, 3000, 10, 2, &[(1, 0), (2, 1)]);
+    table.seats[0].cash = 2_820;
+    assert_eq!(table.net_worth(0), 2_880);
+    table.open_trade(w[0], 1, T0 + 2).unwrap();
+    table.offer_trade(w[1], 2, T0 + 3).unwrap();
+    table.accept_trade(w[0], 1, 2, T0 + 4).unwrap();
+    assert_eq!(table.net_worth(0), 3_000, "Athens for Lisbon (+$20) plus the $100 bonus");
+    assert_eq!((table.phase, table.stage, table.ended_at), (TablePhase::Finished, Stage::Idle, T0 + 4));
+    assert_eq!(table.trade, Trade::default());
+    assert_eq!(table.payouts().unwrap()[0], 2_010_000);
+}
+
+#[test]
+fn trade_timeouts_strike_only_the_lander_and_an_empty_offer_window_cancels_without_one() {
+    let w = wallets();
+    // TradeOpen times out: strike, and the turn ends.
+    let mut table = auction(3, 7000, 10, 2, &HOLDINGS);
+    assert!(table.force_timeout(table.stage_deadline - 1).is_err());
+    table.force_timeout(table.stage_deadline).unwrap();
+    assert_eq!((table.seats[0].strikes, table.turn, table.stage), (1, 1, Stage::PreRoll));
+
+    // No offer arrives: the window closing cancels the trade with no strike, and a 6 still rolls again.
+    let mut table = auction(3, 7000, 6, 6, &HOLDINGS);
+    table.open_trade(w[0], 14, T0 + 2).unwrap();
+    let closes = table.trade.deadline;
+    assert!(table.force_timeout(closes - 1).is_err());
+    assert!(table.offer_trade(w[1], 1, closes).is_err(), "offers close at the deadline");
+    table.force_timeout(closes).unwrap();
+    assert_eq!((table.seats[0].strikes, table.turn, table.stage), (0, 0, Stage::PreRoll));
+    assert_eq!(table.trade, Trade::default());
+
+    // Offers arrive but the lander never decides: cancel, strike the lander, never the offerers.
+    let mut table = auction(3, 7000, 6, 6, &HOLDINGS);
+    table.open_trade(w[0], 14, T0 + 2).unwrap();
+    table.offer_trade(w[1], 1, T0 + 3).unwrap();
+    let before = table.clone();
+    assert!(table.force_timeout(table.trade.deadline).is_err(), "the lander still has time to decide");
+    assert_eq!(table, before);
+    table.force_timeout(table.stage_deadline).unwrap();
+    assert_eq!([table.seats[0].strikes, table.seats[1].strikes, table.seats[2].strikes], [1, 0, 0]);
+    assert_eq!((table.board[1].owner, table.board[14].owner), (1, 0));
+    assert_eq!((table.turn, table.stage, table.trade), (1, Stage::PreRoll, Trade::default()), "the turn ends despite the 6");
+
+    // A third strike in a trade stage forfeits the lander.
+    let mut table = auction(3, 7000, 10, 2, &HOLDINGS);
+    table.seats[0].strikes = 2;
+    table.force_timeout(table.stage_deadline).unwrap();
+    assert_eq!((table.seats[0].eliminated_at, table.board[2].owner, table.board[14].owner), (1, NO_OWNER, NO_OWNER));
+
+    // The idle deadline still ends a stalled trade by ranking.
+    let mut table = auction(3, 7000, 10, 2, &HOLDINGS);
+    table.open_trade(w[0], 14, T0 + 2).unwrap();
+    table.offer_trade(w[1], 1, T0 + 3).unwrap();
+    table.force_timeout(T0 + 3 + IDLE_SECONDS).unwrap();
+    assert_eq!((table.phase, table.trade), (TablePhase::Finished, Trade::default()));
+}
+
+#[test]
+fn eliminated_seats_cannot_offer_and_accept_revalidates_both_properties() {
+    let w = wallets();
+    let mut table = auction(4, 7000, 10, 2, &[(2, 0), (14, 0), (1, 1), (4, 1), (17, 2), (19, 3)]);
+    table.open_trade(w[0], 14, T0 + 2).unwrap();
+    // Seat 3 is eliminated by fixture after the trade opened (no instruction can do it here).
+    table.seats[3].eliminated_at = 1;
+    table.seats[3].cash = 0;
+    table.elimination_seq = 1;
+    let before = table.clone();
+    assert!(table.offer_trade(w[3], 19, T0 + 3).is_err(), "an eliminated seat cannot offer");
+    assert_eq!(table, before);
+
+    table.offer_trade(w[1], 1, T0 + 3).unwrap();
+    table.offer_trade(w[2], 17, T0 + 3).unwrap();
+    let offered = table.clone();
+    table.board[1].buildings = 1;
+    assert!(table.accept_trade(w[0], 1, 1, T0 + 4).is_err(), "the offered property gained a building");
+    table = offered.clone();
+    table.board[17].owner = 1;
+    assert!(table.accept_trade(w[0], 2, 17, T0 + 4).is_err(), "the offered property changed hands");
+    table = offered.clone();
+    table.board[14].owner = NO_OWNER;
+    assert!(table.accept_trade(w[0], 1, 1, T0 + 4).is_err(), "the lander no longer owns its side");
+    table = offered.clone();
+    table.seats[2].eliminated_at = 1;
+    assert!(table.accept_trade(w[0], 2, 17, T0 + 4).is_err(), "the offerer was eliminated");
+
+    let mut table = offered;
+    table.accept_trade(w[0], 2, 17, T0 + 4).unwrap();
+    assert_eq!((table.board[14].owner, table.board[17].owner, table.board[1].owner), (2, 0, 1));
+}

@@ -14,7 +14,7 @@ export interface Board {
     jailSpace: number; jailTurns: number; bail: number; saleBps: number; maxBuildingsPerCity: number; tradeBonus: number;
     groupRentMultiplier: number; buildingRentMultipliers: number[]; targets: number[];
     seatBonusStepByTarget: Record<string, number>; defaultTargetByPlayers: Record<string, number>;
-    deadlinesSec: { preRoll: number; buyDecision: number; vrfRetry: number; idle: number; emergencyRefundAfterIdle: number };
+    deadlinesSec: { preRoll: number; buyDecision: number; tradeOpen: number; tradeOffers: number; tradeOwnerDecision: number; vrfRetry: number; idle: number; emergencyRefundAfterIdle: number };
     strikesToForfeit: number;
   };
   luckyDeck: LuckyCard[];

@@ -740,3 +740,40 @@ fn the_worst_case_roll_callback_fits_the_vrf_callback_budget() {
     eprintln!("worst consume_randomness CU {worst} (budget 200,000; VRF callback cap ~272,000)");
     assert!(worst < 200_000, "worst-case callback CU {worst}");
 }
+
+#[test]
+fn an_accepted_trade_swaps_with_the_chosen_seat_and_only_the_lander_or_active_seats_act() {
+    let mut h = Harness::new();
+    h.playing(4, 7000);
+    // Seat 0 holds Seoul; seat 1 Lisbon; seat 2 Berlin; seat 3 was eliminated (its holdings released).
+    let mut table = h.read();
+    for (space, owner) in [(14usize, 0u8), (1, 1), (17, 2)] {
+        table.board[space].owner = owner;
+    }
+    table.seats[3].eliminated_at = 1;
+    table.seats[3].cash = 0;
+    table.elimination_seq = 1;
+    table.seats[0].position = 10;
+    h.write(&table);
+    h.roll(0).unwrap();
+    h.callback(scoped_identity(), die(2), h.read().vrf_nonce).unwrap();
+    assert_eq!(h.read().stage, Stage::TradeOpen, "landing on Auction with tradeable holdings");
+    assert!(h.action(1, bankroll::instruction::OpenTrade { space: 1 }).is_err(), "only the lander opens");
+    h.action(0, bankroll::instruction::OpenTrade { space: 14 }).unwrap();
+
+    h.action(1, bankroll::instruction::OfferTrade { space: 1 }).unwrap();
+    h.action(2, bankroll::instruction::OfferTrade { space: 17 }).unwrap();
+    let before = h.snapshot();
+    assert!(h.action(3, bankroll::instruction::OfferTrade { space: 19 }).is_err(), "an eliminated seat cannot offer");
+    assert!(h.action(1, bankroll::instruction::AcceptTrade { seat: 2, space: 17 }).is_err(), "a non-lander cannot accept");
+    assert!(h.action(0, bankroll::instruction::AcceptTrade { seat: 1, space: 17 }).is_err(), "seat 1 never offered Berlin");
+    assert_eq!(h.snapshot(), before, "rejected trade calls change nothing");
+
+    let cash = h.read().seats.map(|seat| seat.cash);
+    let accept = h.action(0, bankroll::instruction::AcceptTrade { seat: 2, space: 17 }).unwrap();
+    eprintln!("accept_trade CU {}", accept.compute_units_consumed);
+    let table = h.read();
+    assert_eq!((table.board[14].owner, table.board[17].owner, table.board[1].owner), (2, 0, 1), "swapped with seat 2 only");
+    assert_eq!(table.seats.map(|seat| seat.cash), [cash[0] + 100, cash[1], cash[2] + 100, cash[3]]);
+    assert_eq!((table.stage, table.turn, table.trade), (Stage::PreRoll, 1, bankroll::Trade::default()));
+}

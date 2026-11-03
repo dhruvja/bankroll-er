@@ -5,6 +5,8 @@ use crate::board::SPACES;
 pub const MAX_SEATS: usize = 4;
 pub const NAME_LEN: usize = 16;
 pub const NO_OWNER: u8 = u8::MAX;
+/// Space 0 (Start) is never a property, so it marks an empty trade offer and zeroed bytes read as none.
+pub const NO_OFFER: u8 = 0;
 pub const LOBBY_SECONDS: i64 = 600;
 pub const FEE_BPS: u64 = 300;
 /// How long a seat that isn't rolling waits before it may re-request a missing roll.
@@ -124,11 +126,14 @@ impl Default for Lot {
     }
 }
 
-/// Auction-space trade (phase 04). Reserved in the layout now so phase 04 needs no migration.
+/// The Auction-space trade, live only in `TradeOffers` and all zero otherwise.
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Default, Debug, PartialEq, InitSpace)]
 pub struct Trade {
+    /// The lander's offered property.
     pub space: u8,
+    /// Each seat's counter-offer, or `NO_OFFER`.
     pub offers: [u8; MAX_SEATS],
+    /// Offers close here; the lander may still decide until `stage_deadline`.
     pub deadline: i64,
 }
 
@@ -209,4 +214,10 @@ pub enum GameError {
     CannotBuild,
     #[msg("Only a jailed player can pay bail")]
     NotJailed,
+    #[msg("Trades need a property you own without buildings")]
+    CannotTrade,
+    #[msg("The offer window has closed")]
+    OffersClosed,
+    #[msg("That seat has no such offer; it may have changed")]
+    OfferChanged,
 }

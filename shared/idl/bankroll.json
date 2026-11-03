@@ -7,6 +7,64 @@
   },
   "instructions": [
     {
+      "name": "accept_trade",
+      "docs": [
+        "The lander accepts `seat`'s current offer of `space`."
+      ],
+      "discriminator": [
+        139,
+        218,
+        29,
+        95,
+        124,
+        75,
+        64,
+        116
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "signer": true
+        },
+        {
+          "name": "table",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  98,
+                  108,
+                  101,
+                  95,
+                  118,
+                  49
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "table.index",
+                "account": "Table"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "seat",
+          "type": "u8"
+        },
+        {
+          "name": "space",
+          "type": "u8"
+        }
+      ]
+    },
+    {
       "name": "build",
       "discriminator": [
         185,
@@ -587,6 +645,57 @@
       ]
     },
     {
+      "name": "offer_trade",
+      "discriminator": [
+        241,
+        115,
+        93,
+        197,
+        241,
+        206,
+        143,
+        42
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "signer": true
+        },
+        {
+          "name": "table",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  98,
+                  108,
+                  101,
+                  95,
+                  118,
+                  49
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "table.index",
+                "account": "Table"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "space",
+          "type": "u8"
+        }
+      ]
+    },
+    {
       "name": "open_table",
       "docs": [
         "A zero-SOL host claims a Free table and pays its own entry in the same instruction."
@@ -670,6 +779,57 @@
         {
           "name": "target",
           "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "open_trade",
+      "discriminator": [
+        125,
+        254,
+        110,
+        105,
+        226,
+        33,
+        232,
+        107
+      ],
+      "accounts": [
+        {
+          "name": "signer",
+          "signer": true
+        },
+        {
+          "name": "table",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  98,
+                  108,
+                  101,
+                  95,
+                  118,
+                  49
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "table.index",
+                "account": "Table"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "space",
+          "type": "u8"
         }
       ]
     },
@@ -1259,6 +1419,21 @@
       "code": 6021,
       "name": "NotJailed",
       "msg": "Only a jailed player can pay bail"
+    },
+    {
+      "code": 6022,
+      "name": "CannotTrade",
+      "msg": "Trades need a property you own without buildings"
+    },
+    {
+      "code": 6023,
+      "name": "OffersClosed",
+      "msg": "The offer window has closed"
+    },
+    {
+      "code": 6024,
+      "name": "OfferChanged",
+      "msg": "That seat has no such offer; it may have changed"
     }
   ],
   "types": [
@@ -1568,17 +1743,23 @@
     {
       "name": "Trade",
       "docs": [
-        "Auction-space trade (phase 04). Reserved in the layout now so phase 04 needs no migration."
+        "The Auction-space trade, live only in `TradeOffers` and all zero otherwise."
       ],
       "type": {
         "kind": "struct",
         "fields": [
           {
             "name": "space",
+            "docs": [
+              "The lander's offered property."
+            ],
             "type": "u8"
           },
           {
             "name": "offers",
+            "docs": [
+              "Each seat's counter-offer, or `NO_OFFER`."
+            ],
             "type": {
               "array": [
                 "u8",
@@ -1588,6 +1769,9 @@
           },
           {
             "name": "deadline",
+            "docs": [
+              "Offers close here; the lander may still decide until `stage_deadline`."
+            ],
             "type": "i64"
           }
         ]

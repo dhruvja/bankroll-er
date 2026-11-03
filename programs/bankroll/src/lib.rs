@@ -189,6 +189,28 @@ pub mod bankroll {
             .pay_bail(ctx.accounts.signer.key(), Clock::get()?.unix_timestamp)
     }
 
+    pub fn open_trade(ctx: Context<TableAction>, space: u8) -> Result<()> {
+        ctx.accounts
+            .table
+            .open_trade(ctx.accounts.signer.key(), space, Clock::get()?.unix_timestamp)
+    }
+
+    pub fn offer_trade(ctx: Context<TableAction>, space: u8) -> Result<()> {
+        ctx.accounts
+            .table
+            .offer_trade(ctx.accounts.signer.key(), space, Clock::get()?.unix_timestamp)
+    }
+
+    /// The lander accepts `seat`'s current offer of `space`.
+    pub fn accept_trade(ctx: Context<TableAction>, seat: u8, space: u8) -> Result<()> {
+        ctx.accounts.table.accept_trade(
+            ctx.accounts.signer.key(),
+            seat,
+            space,
+            Clock::get()?.unix_timestamp,
+        )
+    }
+
     pub fn force_timeout(ctx: Context<TableAction>) -> Result<()> {
         ctx.accounts
             .table

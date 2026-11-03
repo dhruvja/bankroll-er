@@ -306,6 +306,9 @@ impl Table {
         if buying && self.is_active(seat) {
             self.stage = Stage::BuyDecision;
             self.stage_deadline = now + BUY_SECONDS;
+        } else if self.may_open_trade(seat) {
+            self.stage = Stage::TradeOpen;
+            self.stage_deadline = now + TRADE_OPEN_SECONDS;
         } else {
             self.finish_roll(now);
         }
@@ -423,8 +426,10 @@ impl Table {
         Ok(())
     }
 
+    /// Declines a buy, or skips or cancels an Auction trade.
     pub fn pass(&mut self, caller: Pubkey, now: i64) -> Result<()> {
-        self.acting_seat(caller, &[Stage::BuyDecision])?;
+        self.acting_seat(caller, &[Stage::BuyDecision, Stage::TradeOpen, Stage::TradeOffers])?;
+        self.trade = Trade::default();
         self.last_action_at = now;
         self.finish_roll(now);
         self.check_end(now);
@@ -494,6 +499,81 @@ impl Table {
         Ok(())
     }
 
+    /// Whether `seat` owns `space` and it has no buildings: the only properties a trade can move.
+    fn tradeable(&self, seat: usize, space: usize) -> bool {
+        space < SPACES && self.board[space].owner as usize == seat && self.board[space].buildings == 0
+    }
+
+    /// TradeOpen follows a landing on Auction only when the lander and at least one other active
+    /// seat each own an unbuilt property; otherwise no trade could complete, so the stage is skipped.
+    fn may_open_trade(&self, seat: usize) -> bool {
+        let has_unbuilt = |owner: usize| (0..SPACES).any(|space| self.tradeable(owner, space));
+        self.is_active(seat)
+            && BOARD[self.seats[seat].position as usize].kind == SpaceKind::Auction
+            && has_unbuilt(seat)
+            && (0..self.count()).any(|other| other != seat && self.is_active(other) && has_unbuilt(other))
+    }
+
+    /// The lander offers one unbuilt property; the offer window opens for the other seats.
+    pub fn open_trade(&mut self, caller: Pubkey, space: u8, now: i64) -> Result<()> {
+        let seat = self.acting_seat(caller, &[Stage::TradeOpen])?;
+        require!(self.tradeable(seat, space as usize), GameError::CannotTrade);
+        let deadline = now + TRADE_OFFER_SECONDS;
+        self.trade = Trade { space, offers: [NO_OFFER; MAX_SEATS], deadline };
+        self.stage = Stage::TradeOffers;
+        self.stage_deadline = deadline + TRADE_DECISION_SECONDS;
+        self.last_action_at = now;
+        Ok(())
+    }
+
+    /// Another active seat offers one of its unbuilt properties in return, replacing its earlier
+    /// offer. Offers close at `trade.deadline`.
+    pub fn offer_trade(&mut self, caller: Pubkey, space: u8, now: i64) -> Result<()> {
+        require!(
+            self.phase == TablePhase::Playing && self.stage == Stage::TradeOffers,
+            GameError::InvalidStage
+        );
+        require!(now < self.trade.deadline, GameError::OffersClosed);
+        let seat = self.seat_of(&caller).ok_or(GameError::Unauthorized)?;
+        require!(
+            seat != self.current_seat() && self.is_active(seat),
+            GameError::Unauthorized
+        );
+        require!(self.tradeable(seat, space as usize), GameError::CannotTrade);
+        self.trade.offers[seat] = space;
+        self.last_action_at = now;
+        Ok(())
+    }
+
+    /// The lander accepts `seat`'s offer, naming the offered `space` so an offer replaced in the
+    /// meantime cannot be accepted by mistake. Both sides get the trade bonus, then the end
+    /// conditions run.
+    pub fn accept_trade(&mut self, caller: Pubkey, seat: u8, space: u8, now: i64) -> Result<()> {
+        let lander = self.acting_seat(caller, &[Stage::TradeOffers])?;
+        let seat = seat as usize;
+        require!(
+            seat < MAX_SEATS && space != NO_OFFER && self.trade.offers[seat] == space,
+            GameError::OfferChanged
+        );
+        // Nothing can sell or build during TradeOffers; re-checked anyway so a stale offer never swaps.
+        let given = self.trade.space as usize;
+        require!(
+            self.is_active(seat)
+                && self.tradeable(seat, space as usize)
+                && self.tradeable(lander, given),
+            GameError::CannotTrade
+        );
+        self.board[given].owner = seat as u8;
+        self.board[space as usize].owner = lander as u8;
+        self.seats[lander].cash += TRADE_BONUS;
+        self.seats[seat].cash += TRADE_BONUS;
+        self.trade = Trade::default();
+        self.last_action_at = now;
+        self.finish_roll(now);
+        self.check_end(now);
+        Ok(())
+    }
+
     /// The current seat, when `caller` holds it and the turn is in one of `stages`.
     fn acting_seat(&self, caller: Pubkey, stages: &[Stage]) -> Result<usize> {
         require!(
@@ -528,13 +608,28 @@ impl Table {
                     self.finish(now);
                 }
             }
+            // An offer window that closes empty cancels the trade with no strike: the lander did
+            // nothing wrong, so its turn continues as after a pass.
             TablePhase::Playing
-                if matches!(self.stage, Stage::PreRoll | Stage::BuyDecision)
-                    && now >= self.stage_deadline =>
+                if self.stage == Stage::TradeOffers
+                    && self.trade.offers.iter().all(|&offer| offer == NO_OFFER)
+                    && now >= self.trade.deadline =>
             {
-                // A timed-out PreRoll skips the turn (a jailed seat serves that turn); a timed-out
-                // BuyDecision passes and the turn ends, including any extra roll from a 6.
+                self.trade = Trade::default();
+                self.finish_roll(now);
+                self.check_end(now);
+            }
+            TablePhase::Playing
+                if matches!(
+                    self.stage,
+                    Stage::PreRoll | Stage::BuyDecision | Stage::TradeOpen | Stage::TradeOffers
+                ) && now >= self.stage_deadline =>
+            {
+                // A timed-out PreRoll skips the turn (a jailed seat serves that turn). A timed-out
+                // BuyDecision or trade stage passes, strikes the current seat (offerers never are)
+                // and ends the turn, including any extra roll from a 6.
                 let seat = self.current_seat();
+                self.trade = Trade::default();
                 if self.stage == Stage::PreRoll && self.seats[seat].jail_turns > 0 {
                     self.seats[seat].jail_turns -= 1;
                 }
@@ -666,6 +761,7 @@ impl Table {
     fn finish(&mut self, now: i64) {
         self.phase = TablePhase::Finished;
         self.stage = Stage::Idle;
+        self.trade = Trade::default();
         self.stage_deadline = 0;
         self.vrf_purpose = VrfPurpose::None;
         self.ended_at = now;
