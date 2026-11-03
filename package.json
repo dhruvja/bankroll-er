@@ -11,7 +11,9 @@
     "gen-board": "node --import tsx scripts/gen-board.ts",
     "bootstrap": "node --import tsx scripts/bootstrap.ts",
     "smoke": "node --import tsx scripts/smoke.ts",
-    "drain-check": "node --import tsx scripts/drain-check.ts"
+    "drain-check": "node --import tsx scripts/drain-check.ts",
+    "build:program": "RUSTC_WRAPPER= cargo build-sbf --manifest-path programs/bankroll/Cargo.toml --tools-version v1.57 --arch v0 --sbf-out-dir target/deploy && RUSTC_WRAPPER= anchor idl build -p bankroll -o shared/idl/bankroll.json",
+    "deploy:devnet": "solana program deploy --url https://rpc.magicblock.app/devnet --use-rpc --keypair ~/.config/solana/id.json --program-id ~/.config/solana/bankroll-er-program-devnet.json target/deploy/bankroll.so"
   },
   "dependencies": {
     "@anchor-lang/core": "1.2.0",
