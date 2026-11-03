@@ -127,7 +127,8 @@ function TableScreen({ table, nonce, me, signer, refresh }: { table: string; non
           <Board view={view} />
           <p>{view.stage === 'ordering' ? 'Drawing turn order…' : view.stage === 'rolling' ? 'Rolling…'
             : view.stage === 'tradeopen' ? `${view.seats[turnSeat].name} landed on Auction and may offer a trade · ${left}s`
-            : view.stage === 'tradeoffers' ? `Auction: ${view.seats[turnSeat].name} offers ${board.spaces[view.trade.space].name}`
+            : view.stage === 'tradeoffers' ? `Auction: ${view.seats[turnSeat].name} offers ${board.spaces[view.trade.space].name} · ${now < view.trade.deadline
+              ? `offers close in ${Math.ceil(view.trade.deadline - now)}s` : `deciding · ${left}s`}`
             : `${view.seats[turnSeat].name} to ${view.stage === 'buydecision' ? 'decide' : view.seats[turnSeat].jailTurns ? 'bail or serve a jail turn' : 'roll'} · ${left}s`}
             {view.lastRoll ? ` · last roll ${view.lastRoll}` : ''}</p>
           {card && <p className="card">{view.seats[card.seat].name} drew a Lucky card: {board.luckyDeck[card.card - 1].text}</p>}
@@ -185,10 +186,11 @@ const spaceLabel = (index: number) => {
   return `${space.name} (${space.group ?? space.kind}, ${money(space.price ?? 0)})`;
 };
 
-/** Whether receiving `gain` would give `seat` a whole city group (mirrors the bots' `completes`). */
-function completesGroup(view: TableView, seat: number, gain: number) {
+/** Whether `seat` would hold a whole city group after swapping `give` (NO_OFFER for none yet) for `gain`. */
+function completesGroup(view: TableView, seat: number, gain: number, give: number) {
   const space = board.spaces[gain];
-  return space.kind === 'city' && Boolean(space.group) && board.groups[space.group!].every(member => member === gain || view.board[member].owner === seat);
+  return space.kind === 'city' && Boolean(space.group)
+    && board.groups[space.group!].every(member => member === gain || (member !== give && view.board[member].owner === seat));
 }
 
 /** The Auction trade. The lander picks one unbuilt property to offer, or skips; every other active
@@ -222,8 +224,8 @@ function TradeSheet({ view, seat, now, busy, onOpen, onOffer, onAccept, onPass }
       <div className="offers">{offers.map(offer => (
         <div key={offer.seat} className="offer">
           <span><span className="dot" style={{ background: SEAT_COLORS[offer.seat] }} />{view.seats[offer.seat].name} offers</span>
-          <b>{board.spaces[offer.space].name}</b><small>{spaceLabel(offer.space)}</small>
-          {completesGroup(view, seat, offer.space) && <small className="buildings">Completes your {board.spaces[offer.space].group} group</small>}
+          <b>{board.spaces[offer.space].name}</b><small>{board.spaces[offer.space].group ?? board.spaces[offer.space].kind} · {money(board.spaces[offer.space].price ?? 0)}</small>
+          {completesGroup(view, seat, offer.space, give) && <small className="buildings">Completes your {board.spaces[offer.space].group} group</small>}
           <button disabled={busy} onClick={() => onAccept(offer.seat, offer.space)}>Swap for it (+{bonus} each)</button>
         </div>))}
         {!offers.length && <p className="hint">Waiting for offers…</p>}</div>
@@ -234,7 +236,7 @@ function TradeSheet({ view, seat, now, busy, onOpen, onOffer, onAccept, onPass }
   return (
     <div className="trade">
       <h3>{view.seats[lander].name} offers {spaceLabel(give)}</h3>
-      {completesGroup(view, seat, give) && <p className="buildings">It would complete your {board.spaces[give].group} group.</p>}
+      {completesGroup(view, seat, give, offering) && <p className="buildings">It would complete your {board.spaces[give].group} group.</p>}
       {offersLeft ? <>
         <p className="hint">Offer one of your properties without buildings in return; you can change it until offers close in {offersLeft}s.
           If {view.seats[lander].name} picks yours, you swap and both get {bonus}.</p>

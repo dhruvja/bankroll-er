@@ -283,13 +283,17 @@ async function execute() {
       feeAtLeast3Percent: expected.treasury >= fee,
       idleSeatStruck: table.seats[idleSeat].strikes >= 1,
       endedByTargetOrBankruptcy: endedBy !== 'idle',
-      ...(trades ? { tradeCompleted: events.trades.length > 0 && events.trades.every(trade => trade.verified) } : {}),
     };
     if (Object.values(assertions).every(Boolean)) break;
     await pause(500);
   }
   const json = (value: unknown) => JSON.stringify(value, (_key, item: unknown) => typeof item === 'bigint' ? item.toString() : item);
   invariant(Object.values(assertions).every(Boolean), `Settlement mismatch: ${json({ assertions, expected, before, after, custodyAfter, table })}`);
+  // With --trades at least one verified swap must have happened. A short game can end before any
+  // seat lands on Auction while both sides hold an unbuilt property; that is bad luck, not a bug, so
+  // it gets its own message (the game itself settled correctly above) and the run can be repeated.
+  const tradeCompleted = events.trades.length > 0 && events.trades.every(trade => trade.verified);
+  if (trades) invariant(tradeCompleted, `No verified trade this game (${json(events)}); settlement was exact, rerun the smoke.`);
 
   // The best-paid non-winner withdraws to base (sponsored, so still zero SOL).
   const ranked = expected.payouts.map((payout, seat) => ({ payout, seat })).sort((a, b) => b.payout - a.payout);
@@ -317,7 +321,7 @@ async function execute() {
       eliminatedAt: finishedView.seats[seat].eliminatedAt, strikes: finishedView.seats[seat].strikes, payout: usdc(expected.payouts[seat]),
       erBefore: usdc(before.players[seat]), erAfter: usdc(after.players[seat]), lamports: lamportsAfter[seat] })),
     tradesMode: trades, pot: usdc(pot), treasuryDelta: usdc(after.treasury - before.treasury), feeBps: 300, rounds: finishedView.round, rolls: turns, endedBy, events,
-    assertions: { ...assertions, withdrawLanded, zeroSol },
+    assertions: { ...assertions, ...(trades ? { tradeCompleted } : {}), withdrawLanded, zeroSol },
     withdraw: { seat: withdrawer.seat, amount: usdc(withdrawAmount), baseBefore: usdc(baseBefore), baseAfter: usdc(baseAfter) },
     signatures: { base, payments: paymentSignatures, settle: settle.signature, er: sent.map(tx => ({ label: tx.label, signature: tx.signature, ms: tx.confirmedAt - tx.sentAt })),
       vrfCallbacks: history.filter(entry => !ours.has(entry.signature) && entry.err === null).length },
