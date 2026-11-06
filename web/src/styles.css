@@ -117,6 +117,11 @@ legend { font-weight: 800; font-stretch: 75%; text-transform: uppercase; margin-
 .head-home, .head-btn { display: none; }
 .head-btn { background: var(--ink); color: var(--white); border: 0; padding: 6px 12px; cursor: pointer; font-weight: 900; font-stretch: 75%; text-transform: uppercase; font-size: 1rem; }
 .invite-btn { background: var(--red); }
+.rent-toast { position: fixed; top: 72px; left: 50%; z-index: 55; transform: translateX(-50%); width: max-content; max-width: calc(100vw - 32px); margin: 0;
+  padding: 10px 16px 10px 14px; background: var(--ink); color: var(--white); border-left: 10px solid var(--yellow); box-shadow: 6px 6px 0 var(--red);
+  font-weight: 800; font-size: 1.05rem; text-align: left; animation: toast-in .25s ease-out; pointer-events: none; }
+@keyframes toast-in { from { transform: translate(-50%, -16px); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .rent-toast { animation: none; } }
 .invite-sheet { position: fixed; inset: 0; z-index: 60; background: var(--paper); overflow-y: auto; padding: 18px 20px 28px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
 .invite-sheet header { position: relative; align-self: stretch; border-bottom: var(--rule) solid var(--ink); padding-bottom: 8px; }
 .invite-sheet h2 { margin: 0; font-size: 2rem; }

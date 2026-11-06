@@ -99,6 +99,26 @@ function useFeed(view: TableView | undefined, key: string) {
   return feed;
 }
 
+/** The newest rent payment, shown for a few seconds once every token has finished walking. */
+function useRentToast(feed: FeedEntry[], landed: boolean) {
+  const seen = useRef(feed[0]?.at ?? 0), [queue, setQueue] = useState<FeedEntry[]>([]), [shown, setShown] = useState<FeedEntry>();
+  useEffect(() => {
+    const fresh = feed.filter(entry => entry.kind === 'rent' && entry.at > seen.current).reverse();
+    seen.current = Math.max(seen.current, feed[0]?.at ?? 0);
+    if (fresh.length) setQueue(current => [...current, ...fresh]);
+  }, [feed]);
+  useEffect(() => {
+    if (shown || !landed || !queue.length) return;
+    setShown(queue[0]); setQueue(current => current.slice(1));
+  }, [queue, landed, shown]);
+  useEffect(() => {
+    if (!shown) return;
+    const timer = setTimeout(() => setShown(undefined), 3500);
+    return () => clearTimeout(timer);
+  }, [shown]);
+  return shown;
+}
+
 /** The Lucky card the latest roll drew, tied to that roll and hidden once the next roll starts. */
 function useDrawnCard(view?: TableView) {
   const previous = useRef<TableView>(undefined), [card, setCard] = useState<{ seat: number; card: number }>();
@@ -131,6 +151,7 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
   const card = useDrawnCard(current ? view : undefined);
   const die = useDie(current ? view : undefined, requested);
   const positions = useTokenPositions(current ? view : undefined, die.settleAt);
+  const rentToast = useRentToast(feed, !die.tumbling && !!view && positions.every((at, index) => at === view.seats[index]?.position));
   const prefix = demo ? '/demo' : '', home = demo ? '/demo' : '/', invite = `${location.origin}${prefix}/play/${table}/${nonce}`;
   useEffect(() => (current && seat >= 0 ? runCrank(table, signer) : undefined), [table, signer, current, seat]);
   useEffect(() => { if (!demo && (view?.phase === 'free' || view?.phase === 'finished')) refresh(); }, [demo, view?.phase, refresh]);
@@ -191,6 +212,7 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
         {!demo && <button type="button" className="head-btn" onClick={openWallet}>Wallet</button>}
         <button type="button" className="head-btn invite-btn" data-testid="invite-open" onClick={() => setInviteOpen(true)}>Invite</button>
       </div>
+      {rentToast && <p key={rentToast.at} className="rent-toast" role="status" data-testid="rent-toast">{rentToast.text}</p>}
       {inviteOpen && <InviteSheet invite={invite} onClose={() => setInviteOpen(false)} />}
       {tradeAlert && <div className="alert" role="status" data-testid="trade-alert">
         {view.stage === 'tradeopen' ? `${view.seats[turnSeat].name} landed on Auction and is picking a property to trade.`
