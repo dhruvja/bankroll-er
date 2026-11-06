@@ -2,13 +2,15 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import type { Keypair } from '@solana/web3.js';
 import { QRCodeSVG } from 'qrcode.react';
 import { board, isProperty } from '../../shared/board';
+import { PROTOCOL_FEE_BPS, TOKEN_SCALE, WITHDRAW_MINIMUM } from '../../shared/config';
 import { THEMES, spacesFor } from '../../shared/themes';
 import { NO_OFFER, NO_OWNER, canBuild, currentSeat, expectedPayouts, isActive, netWorth, rent, saleValue, tradeOffers, tradeable, type TableView } from '../../shared/chain';
-import { acceptTrade, act, client, friendlyError, joinTable, property, runCrank, subscribeTable, tableTransactions, trade, watchTableTransactions, type TableTransaction } from './lib/game';
+import { acceptTrade, act, canReceive, client, friendlyError, joinTable, property, runCrank, subscribeTable, tableTransactions, trade, watchTableTransactions, type TableTransaction } from './lib/game';
 import { Board, Die, GROUP_COLORS, GROUP_INK, SEAT_COLORS, SEAT_INK, money, useDie, useTokenPositions, type Highlight } from './Board';
 import { PublicKey } from '@solana/web3.js';
 
 const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
+export const usdc = (atoms: number) => (atoms / TOKEN_SCALE).toFixed(2);
 const LAST_GAME = 'bankroll.lastGame';
 export function navigate(path: string) { history.pushState(null, '', path); dispatchEvent(new PopStateEvent('popstate')); }
 
@@ -114,7 +116,11 @@ const STAGE_SECONDS: Record<string, number> = {
   tradeopen: board.rules.deadlinesSec.tradeOpen, tradeoffers: board.rules.deadlinesSec.tradeOffers + board.rules.deadlinesSec.tradeOwnerDecision,
 };
 
-export function TableScreen({ table, nonce, me, signer }: { table: string; nonce: number; me: string; signer: Keypair }) {
+/** `demo` tables hide every amount (the faucet pays their 0.001 USDC entries); USDC tables show the
+ * entry, pot, payouts and wallet. */
+export function TableScreen({ demo, table, nonce, me, signer, refresh, openWallet }: {
+  demo: boolean; table: string; nonce: number; me: string; signer: Keypair; refresh: () => void; openWallet: () => void;
+}) {
   const { view, connected, readError } = useTable(table);
   const { busy, error, run } = useBusy(), now = useNow();
   const [selected, setSelected] = useState<number>(), [requested, setRequested] = useState(false), [name, setName] = useState('');
@@ -123,11 +129,13 @@ export function TableScreen({ table, nonce, me, signer }: { table: string; nonce
   const card = useDrawnCard(current ? view : undefined);
   const die = useDie(current ? view : undefined, requested);
   const positions = useTokenPositions(current ? view : undefined, die.settleAt);
+  const prefix = demo ? '/demo' : '', home = demo ? '/demo' : '/';
   useEffect(() => (current && seat >= 0 ? runCrank(table, signer) : undefined), [table, signer, current, seat]);
+  useEffect(() => { if (!demo && (view?.phase === 'free' || view?.phase === 'finished')) refresh(); }, [demo, view?.phase, refresh]);
   useEffect(() => {
     if (!current || seat < 0) return;
-    try { if (view.phase === 'free') localStorage.removeItem(LAST_GAME); else localStorage.setItem(LAST_GAME, `/play/${table}/${nonce}`); } catch { /* Convenience only. */ }
-  }, [current, seat, view?.phase, table, nonce]);
+    try { if (view.phase === 'free') localStorage.removeItem(LAST_GAME); else localStorage.setItem(LAST_GAME, `${prefix}/play/${table}/${nonce}`); } catch { /* Convenience only. */ }
+  }, [current, seat, view?.phase, table, nonce, prefix]);
 
   // Trade alert: someone else's Auction landing wants your offer.
   const lander = view ? currentSeat(view) : -1;
@@ -153,7 +161,7 @@ export function TableScreen({ table, nonce, me, signer }: { table: string; nonce
   if (!current) return (
     <section className="sheet center-note" data-testid="stale-invite">
       <p>This invite was for an earlier game at table {view.index + 1}. That game has ended.</p>
-      <button className="btn" onClick={() => navigate('/')}>Back to the tables</button>
+      <button className="btn" onClick={() => navigate(home)}>Back to the tables</button>
     </section>
   );
 
@@ -172,21 +180,21 @@ export function TableScreen({ table, nonce, me, signer }: { table: string; nonce
       data-my-turn={myTurn ? 'yes' : 'no'} data-lander={turnSeat} data-nonce={view.gameNonce} data-busy={busy ? 'yes' : 'no'}>
       <div className="table-head">
         <h1>Table {view.index + 1}</h1>
-        <p>{THEMES[view.theme]?.name ?? 'Classic'} board, first to {money(view.target)} net worth</p>
+        <p>{demo ? '' : `${usdc(view.entry)} USDC entry, ${usdc(view.entry * view.playerCount)} pot, `}{THEMES[view.theme]?.name ?? 'Classic'} board, first to {money(view.target)} net worth</p>
         <span className={`link-state${connected ? '' : ' offline'}`} data-testid="connection">{connected ? 'Live' : 'Reconnecting…'}</span>
       </div>
       {tradeAlert && <div className="alert" role="status" data-testid="trade-alert">
         {view.stage === 'tradeopen' ? `${view.seats[turnSeat].name} landed on Auction and is picking a property to trade.`
           : `${view.seats[turnSeat].name} puts ${spacesFor(view.theme)[view.trade.space].name} up for a swap. Make an offer within ${Math.max(0, Math.ceil(view.trade.deadline - now))}s.`}
       </div>}
-      {timedOut && <div className="alert warn" role="status" data-testid="timed-out">This game timed out after an hour without a move. It ends now, ranked by net worth.</div>}
+      {timedOut && <div className="alert warn" role="status" data-testid="timed-out">This game timed out after an hour without a move. {demo ? 'It ends now, ranked by net worth.' : 'It is ending by ranking and paying out now.'}</div>}
       {!timedOut && view.phase === 'playing' && view.stage !== 'ordering' && idleAt - now < 600 && <div className="alert warn" role="status">No moves for {Math.floor((now - view.lastActionAt) / 60)} minutes. If nobody moves, the game ends by ranking in {clock(Math.max(0, idleAt - now))}.</div>}
 
       <div className="table-grid">
         <div className="board-col">
           <SeatStrip view={view} me={me} seats={[0, 1]} />
           <Board view={view} positions={positions} highlights={highlights} selected={selected} onSelect={space => setSelected(space === selected ? undefined : space)}>
-            <Center view={view} seat={seat} myTurn={myTurn} left={left} now={now} busy={busy} die={die} card={card} timedOut={timedOut}
+            <Center view={view} seat={seat} myTurn={myTurn} left={left} now={now} busy={busy} die={die} card={card} timedOut={timedOut} demo={demo}
               onRoll={action('roll')} onBail={action('bail')} onStart={action('start')} onCancel={action('cancel')} onBuy={action('buy')} onPass={action('pass')} />
           </Board>
           <SeatStrip view={view} me={me} seats={[2, 3]} />
@@ -196,8 +204,8 @@ export function TableScreen({ table, nonce, me, signer }: { table: string; nonce
           <Players view={view} me={me} />
           {error && <p className="error" role="alert" data-testid="error">{error}</p>}
 
-          {view.phase === 'lobby' && <Lobby view={view} seat={seat} table={table} nonce={nonce} name={name} setName={setName} busy={busy}
-            onJoin={() => void run(() => joinTable(table, nonce, name.trim(), view.entry))} />}
+          {view.phase === 'lobby' && <Lobby view={view} seat={seat} table={table} nonce={nonce} name={name} setName={setName} busy={busy} demo={demo} openWallet={openWallet}
+            onJoin={() => void run(async () => { await joinTable(table, nonce, name.trim(), view.entry); if (!demo) refresh(); })} />}
 
           {view.phase === 'playing' && view.stage === 'buydecision' && <PropertyCard view={view} space={view.seats[turnSeat].position} seat={seat}
             heading={myTurn ? 'Buy this property?' : `${view.seats[turnSeat].name} is deciding`} />}
@@ -221,11 +229,11 @@ export function TableScreen({ table, nonce, me, signer }: { table: string; nonce
           </PropertyCard>}
 
           {view.phase === 'playing' && seat >= 0 && <Holdings view={view} seat={seat} buildNow={myTurn && view.stage === 'preroll'} onSelect={setSelected} />}
-          {(view.phase === 'finished' || view.phase === 'free' && view.endedAt > 0) && <Results view={view} me={me} />}
-          {view.phase === 'free' && !view.endedAt && <section className="panel" data-testid="refunded"><h2>Table closed</h2>
-            <p className="quiet">The game never started.</p>
-            <button className="btn primary" onClick={() => navigate('/')}>Back to the tables</button></section>}
-          {view.phase === 'refunding' && <Closing view={view} />}
+          {(view.phase === 'finished' || view.phase === 'free' && view.endedAt > 0) && <Results view={view} me={me} demo={demo} home={home} openWallet={openWallet} />}
+          {view.phase === 'free' && !view.endedAt && <section className="panel" data-testid="refunded"><h2>{demo ? 'Table closed' : 'Entries refunded'}</h2>
+            <p className="quiet">{demo ? 'The game never started.' : 'The game never started, so every entry went back to its play balance with no fee.'}</p>
+            <button className="btn primary" onClick={() => navigate(home)}>Back to the tables</button></section>}
+          {view.phase === 'refunding' && (demo ? <Closing view={view} /> : <Refunding view={view} seat={seat} now={now} openWallet={openWallet} />)}
           <Feed feed={feed} />
           <TxLog table={table} since={view.lobbyDeadline - LOBBY_SECONDS} />
         </div>
@@ -234,9 +242,9 @@ export function TableScreen({ table, nonce, me, signer }: { table: string; nonce
   );
 }
 
-function Center({ view, seat, myTurn, left, now, busy, die, card, timedOut, onRoll, onBail, onStart, onCancel, onBuy, onPass }: {
+function Center({ view, seat, myTurn, left, now, busy, die, card, timedOut, demo, onRoll, onBail, onStart, onCancel, onBuy, onPass }: {
   view: TableView; seat: number; myTurn: boolean; left: number; now: number; busy: boolean; die: { face: number; tumbling: boolean };
-  card?: { seat: number; card: number }; timedOut: boolean; onRoll: () => void; onBail: () => void; onStart: () => void; onCancel: () => void;
+  card?: { seat: number; card: number }; timedOut: boolean; demo: boolean; onRoll: () => void; onBail: () => void; onStart: () => void; onCancel: () => void;
   onBuy: () => void; onPass: () => void;
 }) {
   const turnSeat = currentSeat(view), who = view.seats[turnSeat];
@@ -246,21 +254,21 @@ function Center({ view, seat, myTurn, left, now, busy, die, card, timedOut, onRo
       <p className="quiet">Lobby closes in {clock(left)}</p>
       {view.host === view.seats[seat]?.wallet && <div className="actions">
         <button className="btn primary" data-testid="start-game" disabled={busy || view.playerCount < 2} onClick={onStart}>Start game</button>
-        <button className="btn ghost" data-testid="cancel-table" disabled={busy} onClick={onCancel}>Cancel table</button>
+        <button className="btn ghost" data-testid="cancel-table" disabled={busy} onClick={onCancel}>{demo ? 'Cancel table' : 'Cancel and refund'}</button>
       </div>}
       {seat >= 0 && view.host !== view.seats[seat].wallet && <p className="quiet">You’re in. Waiting for the host to start.</p>}
     </div>
   );
   if (view.phase !== 'playing') {
     // Only a game that ended has a ranking; a refunded lobby may have a single seat.
-    if (!view.endedAt) return <div className="center-stack"><p className="big">No game</p><p className="quiet">The game never started.</p></div>;
+    if (!view.endedAt) return <div className="center-stack"><p className="big">No game</p><p className="quiet">{demo ? 'The game never started.' : 'The game never started, so every entry comes back in full.'}</p></div>;
     const payouts = view.phase === 'free' ? view.seats.map(item => item.payout) : expectedPayouts(view).payouts;
     const ranked = view.seats.map((item, index) => ({ item, payout: payouts[index] })).sort((a, b) => b.payout - a.payout);
     return (
       <div className="center-stack">
         <p className="quiet">Game over</p>
         <p className="big" data-testid="winner">{ranked[0].item.name} wins</p>
-        <p className="mint">{money(netWorth(view, view.seats.indexOf(ranked[0].item)))}</p>
+        <p className="mint">{demo ? money(netWorth(view, view.seats.indexOf(ranked[0].item))) : `${usdc(ranked[0].payout)} USDC`}</p>
       </div>
     );
   }
@@ -360,17 +368,19 @@ function Players({ view, me }: { view: TableView; me: string }) {
   );
 }
 
-function Lobby({ view, seat, table, nonce, name, setName, busy, onJoin }: {
-  view: TableView; seat: number; table: string; nonce: number; name: string; setName: (value: string) => void; busy: boolean; onJoin: () => void;
+function Lobby({ view, seat, table, nonce, name, setName, busy, demo, openWallet, onJoin }: {
+  view: TableView; seat: number; table: string; nonce: number; name: string; setName: (value: string) => void; busy: boolean;
+  demo: boolean; openWallet: () => void; onJoin: () => void;
 }) {
-  const invite = `${location.origin}/play/${table}/${nonce}`, [copied, setCopied] = useState(false);
+  const invite = `${location.origin}${demo ? '/demo' : ''}/play/${table}/${nonce}`, [copied, setCopied] = useState(false);
   const copy = () => void navigator.clipboard?.writeText(invite).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
   return (
     <section className="panel invite">
       {seat < 0 && view.playerCount < view.maxPlayers && <form className="join" onSubmit={event => { event.preventDefault(); if (name.trim()) onJoin(); }}>
         <h2>Join this table</h2>
         <label>Your name<input data-testid="join-name" required maxLength={16} value={name} onChange={event => setName(event.target.value)} /></label>
-        <button className="btn primary" data-testid="join-submit" disabled={busy || !name.trim()}>{busy ? 'Joining…' : 'Join table'}</button>
+        <button className="btn primary" data-testid="join-submit" disabled={busy || !name.trim()}>{busy ? 'Joining…' : demo ? 'Join table' : `Join for ${usdc(view.entry)} USDC`}</button>
+        {!demo && <p className="quiet">If your play balance is short, this first moves USDC in from your wallet (0.20 USDC fee, no SOL). <button type="button" className="linkish" onClick={openWallet}>Open wallet</button></p>}
       </form>}
       <h2>Invite friends</h2>
       <div className="qr"><QRCodeSVG value={invite} size={132} bgColor="#FFFFFF" fgColor="#111111" level="M" title="Scan to join this table" /></div>
@@ -502,23 +512,55 @@ function TradeSheet({ view, seat, now, busy, onOpen, onOffer, onAccept, onPass }
   );
 }
 
-function Results({ view, me }: { view: TableView; me: string }) {
-  // The on-chain ranking settles ties and eliminations; net worth is what players see.
+function Results({ view, me, demo, home, openWallet }: { view: TableView; me: string; demo: boolean; home: string; openWallet: () => void }) {
+  // The on-chain ranking settles ties and eliminations. Demo shows net worth; USDC mode shows each payout.
   const settled = view.phase === 'free', payouts = settled ? view.seats.map(seat => seat.payout) : expectedPayouts(view).payouts;
   const ranked = view.seats.map((seat, index) => ({ seat, index, payout: payouts[index] })).sort((a, b) => b.payout - a.payout || netWorth(view, b.index) - netWorth(view, a.index));
+  const mine = ranked.find(item => item.seat.wallet === me);
   return (
     <section className="panel results" data-testid="results" data-settled={settled ? 'yes' : 'no'}>
-      <h2>Final standings</h2>
+      <h2>{demo ? 'Final standings' : settled ? 'Paid out' : 'Game over, paying out…'}</h2>
       <ol>{ranked.map((item, place) => (
         <li key={item.seat.wallet} data-testid={`result-${item.index}`} data-payout={item.payout}>
           <span className="place">{place + 1}</span><span className="player-token" style={{ background: SEAT_COLORS[item.index], color: SEAT_INK[item.index] }}>{item.seat.name.slice(0, 1).toUpperCase()}</span>
           <span className="result-name">{item.seat.name}{item.seat.wallet === me && <em> (you)</em>}
-            {item.seat.eliminatedAt > 0 && <small>{item.seat.strikes >= board.rules.strikesToForfeit ? 'forfeited' : 'bankrupt'}</small>}</span>
-          <span className="mint">{item.seat.eliminatedAt ? '' : money(netWorth(view, item.index))}</span>
+            <small>{item.seat.eliminatedAt ? (item.seat.strikes >= board.rules.strikesToForfeit ? 'forfeited' : 'bankrupt') : demo ? '' : `net worth ${money(netWorth(view, item.index))}`}</small></span>
+          <span className="mint">{demo ? (item.seat.eliminatedAt ? '' : money(netWorth(view, item.index))) : `${usdc(item.payout)} USDC`}</span>
         </li>))}</ol>
+      {!demo && <p className="quiet">Payouts land in each play balance. The {PROTOCOL_FEE_BPS / 100}% fee and rounding dust go to the treasury.
+        {mine && mine.payout > 0 && mine.payout < WITHDRAW_MINIMUM ? ` Your ${usdc(mine.payout)} USDC is under the ${usdc(WITHDRAW_MINIMUM)} USDC withdraw minimum, so it stays in play for your next entry.`
+          : ` Withdrawals need at least ${usdc(WITHDRAW_MINIMUM)} USDC; smaller balances stay in play for your next entry.`}</p>}
       <div className="actions">
-        <button className="btn primary" data-testid="new-table" onClick={() => navigate('/')}>Play again</button>
+        {!demo && mine && mine.payout >= WITHDRAW_MINIMUM && <button className="btn" onClick={openWallet}>Withdraw winnings</button>}
+        <button className="btn primary" data-testid="new-table" onClick={() => navigate(home)}>Play again</button>
       </div>
+    </section>
+  );
+}
+
+/** Refunding: a lobby that never started, a settle that deferred one unreachable seat, or the
+ * emergency path after a settle kept failing. Each seat collects its own amount. */
+function Refunding({ view, seat, now, openWallet }: { view: TableView; seat: number; now: number; openWallet: () => void }) {
+  const done = view.seats.filter(item => item.refunded).length, mine = seat >= 0 ? view.seats[seat] : undefined;
+  const [reachable, setReachable] = useState<boolean>();
+  useEffect(() => {
+    if (!mine || mine.refunded) return;
+    let alive = true;
+    const check = () => void canReceive(mine.wallet).then(value => { if (alive) setReachable(value); }, () => {});
+    check(); const timer = setInterval(check, 10_000);
+    return () => { alive = false; clearInterval(timer); };
+  }, [mine?.wallet, mine?.refunded]);
+  const grace = Math.max(0, view.stageDeadline - now);
+  return (
+    <section className="panel" data-testid="refunding">
+      <h2>{view.endedAt ? 'Paying out' : 'Refunding entries'}</h2>
+      <p>{view.endedAt ? `The game is over. ${done} of ${view.playerCount} players have their ranked share; the rest are sent as soon as each play balance can receive it.`
+        : `The game never started, so every entry comes back in full, with no fee. ${done} of ${view.playerCount} returned.`}</p>
+      {mine && !mine.refunded && reachable === false && <p className="error" data-testid="treasury-warning">
+        Your play balance can’t receive your {view.endedAt ? 'share' : 'entry'} right now. {grace > 0 ? `Reopen it within ${clock(grace)} by depositing any amount from your wallet, or it goes to the treasury.`
+          : 'The grace period is over, so it can now be sent to the treasury.'} <button className="linkish" onClick={openWallet}>Open wallet</button></p>}
+      {mine && !mine.refunded && reachable && <p className="quiet">Your {view.endedAt ? 'share' : 'entry'} is on its way to your play balance.</p>}
+      {mine?.refunded && <p className="mint">You have yours.</p>}
     </section>
   );
 }

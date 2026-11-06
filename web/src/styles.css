@@ -31,6 +31,10 @@ button, input { font: inherit; color: inherit; }
 
 .topbar { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; max-width: 1180px; margin: 0 auto 14px; padding: 14px 16px 10px; border-bottom: var(--rule) solid var(--ink); }
 .wordmark { font-weight: 900; font-stretch: 62%; font-size: 2.6rem; line-height: .85; text-decoration: none; text-transform: uppercase; }
+.wallet-chip { display: flex; flex-direction: column; align-items: flex-end; background: var(--ink); color: var(--white); border: 0; border-radius: 0; padding: 5px 12px; cursor: pointer; }
+.chip-label { font-size: .68rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; opacity: .8; }
+.chip-value { font-weight: 900; font-size: 1.05rem; }
+.demo-tag { display: inline-block; vertical-align: top; margin-left: 8px; padding: 3px 7px; background: var(--yellow); color: var(--ink); font-size: .8rem; font-stretch: 100%; letter-spacing: .06em; line-height: 1; }
 .footer { max-width: 1180px; margin: 0 auto; padding: 24px 16px; color: var(--mid); font-size: .82rem; border-top: 1px solid var(--ink); }
 
 .btn { border: var(--rule) solid var(--ink); background: var(--white); border-radius: 0; padding: 9px 16px; cursor: pointer; font-weight: 900; font-stretch: 75%; text-transform: uppercase; font-size: 1.05rem; letter-spacing: .02em; }
@@ -39,6 +43,7 @@ button, input { font: inherit; color: inherit; }
 .btn.primary:hover:not(:disabled) { background: #C22F1D; }
 .btn.ghost { background: transparent; }
 .btn:disabled { opacity: .4; cursor: default; }
+.linkish { background: none; border: 0; padding: 0; text-decoration: underline; cursor: pointer; color: var(--ink); font-weight: 700; }
 .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0 0; }
 .actions input { flex: 1; min-width: 0; }
 input:not([type=radio]) { background: var(--white); border: 2px solid var(--ink); border-radius: 0; padding: 9px 12px; width: 100%; }
@@ -56,6 +61,13 @@ input:not([type=radio]) { background: var(--white); border: 2px solid var(--ink)
 .hero h1 { font-size: clamp(2.6rem, 8vw, 5.2rem); font-stretch: 62%; }
 .hero p { max-width: 54ch; color: var(--mid); }
 .home-grid { display: grid; gap: 12px; grid-template-columns: minmax(0, 1fr); }
+.mode-switch { display: inline-block; margin-top: 10px; font-weight: 800; font-stretch: 75%; text-transform: uppercase; text-decoration: none; border-bottom: var(--rule) solid var(--red); }
+.home-side { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+.home-side .panel { margin: 0; }
+.payouts { border-collapse: collapse; width: 100%; font-size: .9rem; }
+.payouts th, .payouts td { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--ink); }
+.payouts th { font-weight: 800; font-stretch: 75%; text-transform: uppercase; }
+.payouts td:not(:first-child) { font-weight: 900; font-size: 1.15rem; }
 @media (min-width: 860px) { .home-grid { grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); align-items: start; } }
 /* Board picker: three poster cards, each with its own primary shape. */
 .themes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
@@ -290,6 +302,16 @@ legend { font-weight: 800; font-stretch: 75%; text-transform: uppercase; margin-
 .txlog td:first-child a { font-variant-numeric: tabular-nums; }
 .txlog .ok { color: var(--green); font-weight: 700; }
 
+
+.backdrop { position: fixed; inset: 0; background: #111111B3; display: grid; place-items: end center; z-index: 10; padding: 16px; }
+@media (min-width: 640px) { .backdrop { place-items: center; } }
+.sheet.wallet { width: min(480px, 100%); background: var(--paper); border: var(--rule) solid var(--ink); border-radius: 0; padding: 18px; position: relative; max-height: calc(100vh - 32px); overflow-y: auto; }
+.sheet.wallet header { position: relative; }
+.address { display: flex; flex-direction: column; width: 100%; text-align: left; background: var(--white); border: 2px solid var(--ink); border-radius: 0; padding: 10px 12px; margin: 8px 0; cursor: pointer; overflow-wrap: anywhere; font-size: .85rem; }
+.address small { color: var(--mid); }
+.balances { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
+.balances dt { font-size: .72rem; font-weight: 800; text-transform: uppercase; color: var(--mid); }
+.balances dd { margin: 0; font-weight: 900; font-size: 1.35rem; }
 
 @media (max-width: 520px) {
   main { padding: 0 12px 28px; }
