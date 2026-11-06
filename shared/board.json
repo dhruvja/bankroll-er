@@ -28,11 +28,6 @@
     },
     {
       "index": 3,
-      "name": "Lucky Card",
-      "kind": "lucky"
-    },
-    {
-      "index": 4,
       "name": "Railway",
       "kind": "public",
       "group": "Public",
@@ -40,7 +35,7 @@
       "rent": 25
     },
     {
-      "index": 5,
+      "index": 4,
       "name": "Cairo",
       "kind": "city",
       "group": "Sky",
@@ -49,13 +44,17 @@
       "buildingCost": 50
     },
     {
-      "index": 6,
-      "name": "Jail",
-      "kind": "jail"
+      "index": 5,
+      "name": "Mumbai",
+      "kind": "city",
+      "group": "Sky",
+      "price": 100,
+      "rent": 10,
+      "buildingCost": 50
     },
     {
-      "index": 7,
-      "name": "Mumbai",
+      "index": 6,
+      "name": "Bangkok",
       "kind": "city",
       "group": "Sky",
       "price": 120,
@@ -63,18 +62,27 @@
       "buildingCost": 50
     },
     {
+      "index": 7,
+      "name": "Jail",
+      "kind": "jail"
+    },
+    {
       "index": 8,
-      "name": "Bangkok",
+      "name": "Madrid",
       "kind": "city",
-      "group": "Sky",
+      "group": "Pink",
       "price": 140,
       "rent": 14,
-      "buildingCost": 50
+      "buildingCost": 100
     },
     {
       "index": 9,
-      "name": "Lucky Card",
-      "kind": "lucky"
+      "name": "Rome",
+      "kind": "city",
+      "group": "Pink",
+      "price": 160,
+      "rent": 16,
+      "buildingCost": 100
     },
     {
       "index": 10,
@@ -86,30 +94,25 @@
     },
     {
       "index": 11,
-      "name": "Madrid",
+      "name": "Seoul",
       "kind": "city",
-      "group": "Pink",
-      "price": 160,
-      "rent": 16,
-      "buildingCost": 100
-    },
-    {
-      "index": 12,
-      "name": "Auction",
-      "kind": "auction"
-    },
-    {
-      "index": 13,
-      "name": "Rome",
-      "kind": "city",
-      "group": "Pink",
+      "group": "Orange",
       "price": 180,
       "rent": 18,
       "buildingCost": 100
     },
     {
-      "index": 14,
-      "name": "Seoul",
+      "index": 12,
+      "name": "Berlin",
+      "kind": "city",
+      "group": "Orange",
+      "price": 180,
+      "rent": 18,
+      "buildingCost": 100
+    },
+    {
+      "index": 13,
+      "name": "Vienna",
       "kind": "city",
       "group": "Orange",
       "price": 200,
@@ -117,12 +120,30 @@
       "buildingCost": 100
     },
     {
+      "index": 14,
+      "name": "Auction",
+      "kind": "auction"
+    },
+    {
       "index": 15,
-      "name": "Lucky Card",
-      "kind": "lucky"
+      "name": "Dubai",
+      "kind": "city",
+      "group": "Teal",
+      "price": 220,
+      "rent": 22,
+      "buildingCost": 150
     },
     {
       "index": 16,
+      "name": "Oslo",
+      "kind": "city",
+      "group": "Teal",
+      "price": 240,
+      "rent": 24,
+      "buildingCost": 150
+    },
+    {
+      "index": 17,
       "name": "Harbor",
       "kind": "public",
       "group": "Public",
@@ -130,21 +151,7 @@
       "rent": 25
     },
     {
-      "index": 17,
-      "name": "Berlin",
-      "kind": "city",
-      "group": "Orange",
-      "price": 220,
-      "rent": 22,
-      "buildingCost": 100
-    },
-    {
       "index": 18,
-      "name": "Lucky Card",
-      "kind": "lucky"
-    },
-    {
-      "index": 19,
       "name": "Paris",
       "kind": "city",
       "group": "Green",
@@ -153,8 +160,17 @@
       "buildingCost": 150
     },
     {
-      "index": 20,
+      "index": 19,
       "name": "London",
+      "kind": "city",
+      "group": "Green",
+      "price": 260,
+      "rent": 26,
+      "buildingCost": 150
+    },
+    {
+      "index": 20,
+      "name": "Sydney",
       "kind": "city",
       "group": "Green",
       "price": 280,
@@ -163,15 +179,29 @@
     },
     {
       "index": 21,
-      "name": "Tokyo",
+      "name": "Lucky Card",
+      "kind": "lucky"
+    },
+    {
+      "index": 22,
+      "name": "Toronto",
       "kind": "city",
-      "group": "Gold",
+      "group": "Purple",
+      "price": 300,
+      "rent": 30,
+      "buildingCost": 200
+    },
+    {
+      "index": 23,
+      "name": "Hong Kong",
+      "kind": "city",
+      "group": "Purple",
       "price": 320,
       "rent": 32,
       "buildingCost": 200
     },
     {
-      "index": 22,
+      "index": 24,
       "name": "Power Plant",
       "kind": "public",
       "group": "Public",
@@ -179,7 +209,25 @@
       "rent": 25
     },
     {
-      "index": 23,
+      "index": 25,
+      "name": "Tokyo",
+      "kind": "city",
+      "group": "Gold",
+      "price": 350,
+      "rent": 35,
+      "buildingCost": 200
+    },
+    {
+      "index": 26,
+      "name": "Shanghai",
+      "kind": "city",
+      "group": "Gold",
+      "price": 350,
+      "rent": 35,
+      "buildingCost": 200
+    },
+    {
+      "index": 27,
       "name": "New York",
       "kind": "city",
       "group": "Gold",
@@ -194,32 +242,43 @@
       2
     ],
     "Sky": [
+      4,
       5,
-      7,
-      8
+      6
     ],
     "Pink": [
-      11,
-      13
+      8,
+      9
     ],
     "Orange": [
-      14,
-      17
+      11,
+      12,
+      13
+    ],
+    "Teal": [
+      15,
+      16
     ],
     "Green": [
+      18,
       19,
       20
     ],
-    "Gold": [
-      21,
+    "Purple": [
+      22,
       23
+    ],
+    "Gold": [
+      25,
+      26,
+      27
     ]
   },
   "publics": [
-    4,
+    3,
     10,
-    16,
-    22
+    17,
+    24
   ],
   "rules": {
     "startCash": 2000,
@@ -229,7 +288,7 @@
       "7000": 175
     },
     "salary": 200,
-    "jailSpace": 6,
+    "jailSpace": 7,
     "jailTurns": 3,
     "bail": 150,
     "tradeBonus": 100,

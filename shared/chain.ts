@@ -26,7 +26,7 @@ export type StageName = typeof STAGES[number];
 export const tableAddress = (index: number, program = PROGRAM_ID) => {
   invariant(Number.isInteger(index) && index >= 0 && index <= 0xffff, 'Invalid table index.');
   const seed = Buffer.alloc(2); seed.writeUInt16LE(index);
-  return PublicKey.findProgramAddressSync([Buffer.from('table_v1'), seed], program)[0];
+  return PublicKey.findProgramAddressSync([Buffer.from('table_v2'), seed], program)[0];
 };
 export const treasuryAddress = (program = PROGRAM_ID) => PublicKey.findProgramAddressSync([Buffer.from('treasury')], program)[0];
 export const tokenAddress = (owner: PublicKey) => getAssociatedTokenAddressSync(mintKey, owner, true);

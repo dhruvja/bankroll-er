@@ -9,39 +9,42 @@ export const SEAT_COLORS = ['#E03C28', '#1D4ED8', '#FFC21A', '#111111'];
 export const SEAT_INK = ['#FFFFFF', '#FFFFFF', '#111111', '#FFFFFF'];
 /** Each color group also has its own shape, so groups differ by more than hue. */
 export const GROUP_COLORS: Record<string, string> = {
-  Brown: '#8B5A2B', Sky: '#1D4ED8', Pink: '#E86AA6', Orange: '#F07C1A', Green: '#1F8A4C', Gold: '#FFC21A', Public: '#111111',
+  Brown: '#8B5A2B', Sky: '#1D4ED8', Pink: '#E86AA6', Orange: '#F07C1A', Teal: '#14A3A3', Green: '#1F8A4C', Purple: '#6B3FA0', Gold: '#FFC21A', Public: '#111111',
 };
 export const GROUP_INK: Record<string, string> = {
-  Brown: '#FFFFFF', Sky: '#FFFFFF', Pink: '#111111', Orange: '#111111', Green: '#FFFFFF', Gold: '#111111', Public: '#FFFFFF',
+  Brown: '#FFFFFF', Sky: '#FFFFFF', Pink: '#111111', Orange: '#111111', Teal: '#111111', Green: '#FFFFFF', Purple: '#FFFFFF', Gold: '#111111', Public: '#FFFFFF',
 };
 const GROUP_SHAPES: Record<string, string> = {
-  Brown: 'square', Sky: 'circle', Pink: 'half', Orange: 'triangle', Green: 'quarter', Gold: 'circle', Public: 'stripes',
+  Brown: 'square', Sky: 'circle', Pink: 'half', Orange: 'triangle', Teal: 'diamond', Green: 'quarter', Purple: 'ring', Gold: 'circle', Public: 'stripes',
 };
 export const money = (value: number) => `${value < 0 ? '−' : ''}$${Math.abs(value).toLocaleString('en-US')}`;
 
-/** Grid cell (row, column) of each space on the 7×7 ring: Start bottom right, then clockwise
- * along the bottom, up the left, across the top and down the right. Corners are Start, Jail,
- * Auction and the last Lucky space. */
+/** Grid cell (row, column) of each space on the 8×8 ring: Start bottom right, then clockwise
+ * along the bottom, up the left, across the top and down the right. The corners are Start, Jail,
+ * Auction and Lucky. */
 export function ringCell(index: number): [number, number] {
-  if (index <= 6) return [7, 7 - index];
-  if (index <= 12) return [7 - (index - 6), 1];
-  if (index <= 18) return [1, 1 + (index - 12)];
-  return [1 + (index - 18), 7];
+  if (index <= 7) return [8, 8 - index];
+  if (index <= 14) return [8 - (index - 7), 1];
+  if (index <= 21) return [1, 1 + (index - 14)];
+  return [1 + (index - 21), 8];
 }
 
 /** Spaces whose label sits low, so a token parks higher on them. */
 const LOW_LABEL = new Set(['start', 'jail', 'auction', 'lucky']);
 
 /** Cell labels: short forms, and soft hyphens (\u00AD) so long area names wrap as KORA-MANGALA, never mid-letter. */
+const SPACES = board.spaces.length;
 const SHORT: Record<string, string> = {
   'Lucky Card': 'Lucky', 'Power Plant': 'Power', 'New York': 'New York',
   Malleshwaram: 'Malle\u00ADshwaram', Koramangala: 'Kora\u00ADmangala', Indiranagar: 'Indira\u00ADnagar', Jayanagar: 'Jaya\u00ADnagar',
   Yelahanka: 'Yela\u00ADhanka', Bellandur: 'Bellan\u00ADdur', Whitefield: 'White\u00ADfield', Ghatkopar: 'Ghat\u00ADkopar', Borivali: 'Bori\u00ADvali',
+  Marathahalli: 'Maratha\u00ADhalli', Sadashivanagar: 'Sadashiva\u00ADnagar', 'Cunningham Road': 'Cunning\u00ADham Road', Goregaon: 'Gore\u00ADgaon',
+  'Frazer Town': 'Frazer Town', 'Richmond Town': 'Rich\u00ADmond Town', 'Lower Parel': 'Lower Parel', 'Lavelle Road': 'Lavelle Road',
 };
 
 export type Highlight = 'give' | 'offer';
 
-/** The 24-space ring. Tokens are drawn over the grid so a move animates cell by cell. */
+/** The 28-space ring. Tokens are drawn over the grid so a move animates cell by cell. */
 export function Board({ view, positions, highlights, selected, onSelect, children }: {
   view: TableView; positions: number[]; highlights: Map<number, { kind: Highlight; seat: number }>; selected?: number;
   onSelect: (space: number) => void; children: ReactNode;
@@ -132,7 +135,7 @@ export function useTokenPositions(view: TableView | undefined, settleAt: { curre
       const next = goal.current.map((target, seat) => {
         const at = previous[seat] ?? target;
         if (at === target) return at;
-        const ahead = (target - at + 24) % 24, to = ahead <= 9 ? (at + 1) % 24 : target;
+        const ahead = (target - at + SPACES) % SPACES, to = ahead <= 9 ? (at + 1) % SPACES : target;
         if (to === target) landed = true; else stepLeft = Math.max(stepLeft, ahead - 1);
         return to;
       });

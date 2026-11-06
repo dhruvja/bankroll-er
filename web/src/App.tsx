@@ -135,7 +135,7 @@ function ThemePicker({ theme, onChange }: { theme: number; onChange: (theme: num
             <span className={`theme-mark ${THEME_SHAPES[item.id]}`} aria-hidden="true" />
             <b>{item.name}</b>
             <span className="theme-streets">
-              {[1, 19, 23].map(index => <span key={index} style={{ borderColor: GROUP_COLORS[spaces[index].group ?? 'Public'] }}>{spaces[index].name}</span>)}
+              {[1, 18, 27].map(index => <span key={index} style={{ borderColor: GROUP_COLORS[spaces[index].group ?? 'Public'] }}>{spaces[index].name}</span>)}
             </span>
           </label>
         );

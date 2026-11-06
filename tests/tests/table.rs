@@ -343,7 +343,7 @@ fn zero_sol_players_open_join_and_settle_the_exact_three_player_split() {
     table.vrf_purpose = VrfPurpose::Roll;
     table.order = [2, 0, 1, 3];
     table.seats[2].cash = 2_850;
-    table.seats[2].position = 23;
+    table.seats[2].position = 27;
     table.seats[0].cash = 2_100;
     table.seats[1].cash = 2_000;
     h.write(&table);
@@ -703,12 +703,12 @@ fn a_late_callback_after_a_vrf_re_request_fails_and_a_jailed_roll_skips_the_orac
     // Seat 1 is jailed: its roll serves the turn and sends no VRF request.
     let mut table = h.read();
     table.seats[1].jail_turns = 2;
-    table.seats[1].position = 6;
+    table.seats[1].position = 7;
     h.write(&table);
     let queue = h.svm.get_account(&ephemeral_vrf_sdk::consts::DEFAULT_EPHEMERAL_QUEUE).unwrap().data;
     h.roll(1).unwrap();
     let table = h.read();
-    assert_eq!((table.seats[1].jail_turns, table.seats[1].position, table.turn), (1, 6, 0));
+    assert_eq!((table.seats[1].jail_turns, table.seats[1].position, table.turn), (1, 7, 0));
     assert_eq!((table.vrf_nonce, table.vrf_purpose), (retried.vrf_nonce, VrfPurpose::None));
     assert_eq!(queue, h.svm.get_account(&ephemeral_vrf_sdk::consts::DEFAULT_EPHEMERAL_QUEUE).unwrap().data, "no request queued");
 }
@@ -717,21 +717,21 @@ fn a_late_callback_after_a_vrf_re_request_fails_and_a_jailed_roll_skips_the_orac
 fn bankruptcy_and_forfeit_rank_through_settle() {
     let mut h = Harness::new();
     h.playing(4, 7000);
-    // Seat 0 lands on seat 1's full-Gold Tokyo with 3 buildings ($352) holding $100: bankrupt.
+    // Seat 0 lands on seat 1's full-Gold Tokyo with 3 buildings ($385) holding $100: bankrupt.
     let mut table = h.read();
-    table.board[21].owner = 1;
-    table.board[21].buildings = 3;
-    table.board[23].owner = 1;
+    table.board[25] = bankroll::Lot { owner: 1, buildings: 3 };
+    table.board[26].owner = 1;
+    table.board[27].owner = 1;
     table.board[1].owner = 0;
     table.seats[0].cash = 100;
-    table.seats[0].position = 18;
+    table.seats[0].position = 22;
     table.seats[3].strikes = 2;
     h.write(&table);
     h.roll(0).unwrap();
     h.callback(scoped_identity(), die(3), h.read().vrf_nonce).unwrap();
     let table = h.read();
     assert_eq!((table.seats[0].eliminated_at, table.board[1].owner, table.turn), (1, NO_OWNER, 1));
-    assert_eq!(table.seats[1].cash, 2000 + 352);
+    assert_eq!(table.seats[1].cash, 2000 + 385);
 
     // Seats 1 and 2 time out once; seat 3's third strike forfeits it.
     for _ in 0..3 {
@@ -759,32 +759,42 @@ fn bankruptcy_and_forfeit_rank_through_settle() {
 
 #[test]
 fn the_worst_case_roll_callback_fits_the_vrf_callback_budget() {
-    // A 6 lands on Lucky 18 and every card is drawn in turn. Card 10 is the phase 03 worst case:
-    // it moves seat 0 onto seat 1's full-Gold Tokyo with 3 buildings ($352), which takes it below
-    // -$500 and releases seven holdings. Three seats remain, so every end condition is evaluated.
+    // A 6 lands on Lucky Card (21) and every card is drawn in turn. The move cards add the heaviest
+    // landing: card 10 moves seat 0 onto seat 1's Power Plant (all four publics, $100) and card 11
+    // onto seat 1's Paris in a full Green group with 3 buildings ($286). Either rent takes seat 0
+    // below -$500 and releases seven holdings. Three seats remain, so every end condition is evaluated.
     let mut worst = 0;
     for card in 1..=12u8 {
         let mut h = Harness::new();
         h.playing(4, 7000);
         let mut table = h.read();
-        table.board[21] = bankroll::Lot { owner: 1, buildings: 3 };
-        table.board[23] = bankroll::Lot { owner: 1, buildings: 3 };
-        for space in [1usize, 2, 5, 7, 8, 11, 13] {
+        for space in [18usize, 19, 20] {
+            table.board[space] = bankroll::Lot { owner: 1, buildings: 3 };
+        }
+        for space in [3usize, 10, 17, 24] {
+            table.board[space].owner = 1;
+        }
+        for space in [1usize, 2, 4, 5, 6, 8, 9] {
             table.board[space] = bankroll::Lot { owner: 0, buildings: if space == 1 || space == 2 { 3 } else { 0 } };
         }
-        for space in [14usize, 17, 19, 20] {
+        for space in [11usize, 12, 13, 16] {
             table.board[space] = bankroll::Lot { owner: 2, buildings: 2 };
         }
-        table.seats[0].cash = -400;
-        table.seats[0].position = 12;
+        table.seats[0].cash = -450;
+        table.seats[0].position = 15;
         table.stage = Stage::Rolling;
         table.vrf_purpose = VrfPurpose::Roll;
         h.write(&table);
         let result = h.callback(scoped_identity(), die_and_card(6, card), table.vrf_nonce).unwrap();
         let after = h.read();
         eprintln!("card {card}: consume_randomness CU {}", result.compute_units_consumed);
-        if card == 10 {
-            assert_eq!((after.seats[0].position, after.seats[0].eliminated_at), (21, 1), "bankrupt on Tokyo rent");
+        if let Some((space, rent)) = match card {
+            10 => Some((24, 100)),
+            11 => Some((18, 286)),
+            _ => None,
+        } {
+            assert_eq!((after.seats[0].position, after.seats[0].eliminated_at), (space, 1), "bankrupt on card {card} rent");
+            assert_eq!(after.seats[1].cash, 2000 + rent);
             assert!(after.board.iter().all(|lot| lot.owner != 0));
             assert_eq!(after.turn, 1);
         }
@@ -800,33 +810,33 @@ fn an_accepted_trade_swaps_with_the_chosen_seat_and_only_the_lander_or_active_se
     h.playing(4, 7000);
     // Seat 0 holds Seoul; seat 1 Lisbon; seat 2 Berlin; seat 3 was eliminated (its holdings released).
     let mut table = h.read();
-    for (space, owner) in [(14usize, 0u8), (1, 1), (17, 2)] {
+    for (space, owner) in [(11usize, 0u8), (1, 1), (12, 2)] {
         table.board[space].owner = owner;
     }
     table.seats[3].eliminated_at = 1;
     table.seats[3].cash = 0;
     table.elimination_seq = 1;
-    table.seats[0].position = 10;
+    table.seats[0].position = 12;
     h.write(&table);
     h.roll(0).unwrap();
     h.callback(scoped_identity(), die(2), h.read().vrf_nonce).unwrap();
     assert_eq!(h.read().stage, Stage::TradeOpen, "landing on Auction with tradeable holdings");
     assert!(h.action(1, bankroll::instruction::OpenTrade { space: 1 }).is_err(), "only the lander opens");
-    h.action(0, bankroll::instruction::OpenTrade { space: 14 }).unwrap();
+    h.action(0, bankroll::instruction::OpenTrade { space: 11 }).unwrap();
 
     h.action(1, bankroll::instruction::OfferTrade { space: 1 }).unwrap();
-    h.action(2, bankroll::instruction::OfferTrade { space: 17 }).unwrap();
+    h.action(2, bankroll::instruction::OfferTrade { space: 12 }).unwrap();
     let before = h.snapshot();
     assert!(h.action(3, bankroll::instruction::OfferTrade { space: 19 }).is_err(), "an eliminated seat cannot offer");
-    assert!(h.action(1, bankroll::instruction::AcceptTrade { seat: 2, space: 17 }).is_err(), "a non-lander cannot accept");
-    assert!(h.action(0, bankroll::instruction::AcceptTrade { seat: 1, space: 17 }).is_err(), "seat 1 never offered Berlin");
+    assert!(h.action(1, bankroll::instruction::AcceptTrade { seat: 2, space: 12 }).is_err(), "a non-lander cannot accept");
+    assert!(h.action(0, bankroll::instruction::AcceptTrade { seat: 1, space: 12 }).is_err(), "seat 1 never offered Berlin");
     assert_eq!(h.snapshot(), before, "rejected trade calls change nothing");
 
     let cash = h.read().seats.map(|seat| seat.cash);
-    let accept = h.action(0, bankroll::instruction::AcceptTrade { seat: 2, space: 17 }).unwrap();
+    let accept = h.action(0, bankroll::instruction::AcceptTrade { seat: 2, space: 12 }).unwrap();
     eprintln!("accept_trade CU {}", accept.compute_units_consumed);
     let table = h.read();
-    assert_eq!((table.board[14].owner, table.board[17].owner, table.board[1].owner), (2, 0, 1), "swapped with seat 2 only");
+    assert_eq!((table.board[11].owner, table.board[12].owner, table.board[1].owner), (2, 0, 1), "swapped with seat 2 only");
     assert_eq!(table.seats.map(|seat| seat.cash), [cash[0] + 100, cash[1], cash[2] + 100, cash[3]]);
     assert_eq!((table.stage, table.turn, table.trade), (Stage::PreRoll, 1, bankroll::Trade::default()));
 }

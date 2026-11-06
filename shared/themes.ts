@@ -9,17 +9,19 @@ export const THEMES: Theme[] = [
   {
     id: 1, name: 'Bangalore', tagline: 'Peenya to Lavelle Road',
     names: {
-      1: 'Peenya', 2: 'Yelahanka', 4: 'Namma Metro', 5: 'E-City', 7: 'Bellandur', 8: 'BTM Layout', 10: 'Airport',
-      11: 'Jayanagar', 13: 'Malleshwaram', 14: 'HSR Layout', 16: 'BMTC Bus', 17: 'Whitefield', 19: 'Indiranagar',
-      20: 'Koramangala', 21: 'MG Road', 22: 'BESCOM', 23: 'Lavelle Road',
+      1: 'Peenya', 2: 'Yelahanka', 3: 'Namma Metro', 4: 'E-City', 5: 'Bellandur', 6: 'BTM Layout', 8: 'Jayanagar',
+      9: 'Malleshwaram', 10: 'Airport', 11: 'HSR Layout', 12: 'Whitefield', 13: 'Marathahalli', 15: 'Hebbal', 16: 'JP Nagar',
+      17: 'BMTC Bus', 18: 'Indiranagar', 19: 'Koramangala', 20: 'Frazer Town', 22: 'Richmond Town', 23: 'Cunningham Road',
+      24: 'BESCOM', 25: 'MG Road', 26: 'Sadashivanagar', 27: 'Lavelle Road',
     },
   },
   {
     id: 2, name: 'Mumbai', tagline: 'Dharavi to Malabar Hill',
     names: {
-      1: 'Dharavi', 2: 'Kurla', 4: 'Local Train', 5: 'Borivali', 7: 'Thane', 8: 'Ghatkopar', 10: 'Airport',
-      11: 'Chembur', 13: 'Dadar', 14: 'Andheri', 16: 'Ferry', 17: 'Powai', 19: 'Bandra',
-      20: 'Juhu', 21: 'Worli', 22: 'BEST', 23: 'Malabar Hill',
+      1: 'Dharavi', 2: 'Kurla', 3: 'Local Train', 4: 'Borivali', 5: 'Thane', 6: 'Ghatkopar', 8: 'Chembur',
+      9: 'Dadar', 10: 'Airport', 11: 'Andheri', 12: 'Powai', 13: 'Goregaon', 15: 'Matunga', 16: 'Lower Parel',
+      17: 'Ferry', 18: 'Bandra', 19: 'Juhu', 20: 'Khar', 22: 'Colaba', 23: 'Marine Drive',
+      24: 'BEST', 25: 'Worli', 26: 'Cuffe Parade', 27: 'Malabar Hill',
     },
   },
 ];

@@ -158,8 +158,8 @@ legend { font-weight: 800; font-stretch: 75%; text-transform: uppercase; margin-
 /* The ring: black rules between white spaces. --pad and --gap feed the token math below. */
 .ring-wrap { container-type: inline-size; width: 100%; min-width: 0; }
 .ring {
-  /* --u is the sizing unit for everything on the board: 1% of the board width. */
-  --u: 1cqi; --h: 100cqi; --cols: 7; --rows: 7; --pad: calc(0.7 * var(--u)); --gap: calc(0.6 * var(--u));
+  /* --u is the sizing unit for everything on the board, sized so 8 spaces fit across. */
+  --u: 0.875cqi; --h: 100cqi; --cols: 8; --rows: 8; --pad: calc(0.7 * var(--u)); --gap: calc(0.6 * var(--u));
   position: relative; width: 100%; height: var(--h);
   display: grid; grid-template-columns: repeat(var(--cols), 1fr); grid-template-rows: repeat(var(--rows), 1fr); gap: var(--gap);
   padding: var(--pad); background: var(--ink);
@@ -181,6 +181,8 @@ legend { font-weight: 800; font-stretch: 75%; text-transform: uppercase; margin-
 .shape.circle { border-radius: 50%; }
 .shape.half { height: calc(1.5 * var(--u)); top: calc(6.3 * var(--u)); border-radius: calc(3 * var(--u)) calc(3 * var(--u)) 0 0; }
 .shape.triangle { clip-path: polygon(50% 0, 100% 100%, 0 100%); }
+.shape.diamond { clip-path: polygon(50% 0, 100% 50%, 50% 100%, 0 50%); }
+.shape.ring { border-radius: 50%; background: radial-gradient(circle, transparent 38%, var(--group) 40%); }
 .shape.quarter { border-radius: calc(3 * var(--u)) 0 0 0; }
 .shape.stripes { background: repeating-linear-gradient(45deg, var(--ink) 0 calc(0.45 * var(--u)), transparent calc(0.45 * var(--u)) calc(1.05 * var(--u))); }
 .cell-name {
@@ -200,8 +202,7 @@ legend { font-weight: 800; font-stretch: 75%; text-transform: uppercase; margin-
 .cell.mark-give { box-shadow: inset 0 0 0 calc(0.8 * var(--u)) var(--yellow); animation: pulse 1.2s ease-in-out infinite; }
 .cell.mark-offer { outline: calc(0.6 * var(--u)) dashed var(--mark); outline-offset: calc(-0.8 * var(--u)); }
 @keyframes pulse { 50% { box-shadow: inset 0 0 0 calc(0.3 * var(--u)) var(--yellow); } }
-.cell.built .cell-name { padding-right: calc(4.4 * var(--u)); }
-.pips { position: absolute; right: calc(0.8 * var(--u)); bottom: calc(0.9 * var(--u)); display: flex; gap: calc(0.35 * var(--u)); }
+.pips { position: absolute; right: calc(0.8 * var(--u)); top: calc(5.1 * var(--u)); display: flex; gap: calc(0.35 * var(--u)); }
 .pips i { width: calc(0.9 * var(--u)); height: calc(2 * var(--u)); background: var(--ink); }
 .pips i.hotel { width: calc(3 * var(--u)); height: calc(2.2 * var(--u)); background: var(--red); box-shadow: inset 0 0 0 calc(0.35 * var(--u)) var(--ink); }
 .token {
@@ -290,6 +291,8 @@ legend { font-weight: 800; font-stretch: 75%; text-transform: uppercase; margin-
   main.on-table .alert { padding: 6px 10px; margin-bottom: 6px; font-size: .85rem; }
   .table-grid { gap: 0; }
   .board-col { gap: 6px; }
+  /* Eight spaces across a phone: narrower letters, and names break only at their hyphenation points. */
+  .cell-name { font-stretch: 62%; overflow-wrap: normal; font-size: clamp(7.5px, calc(2.4 * var(--u)), 15px); padding: 0 calc(0.6 * var(--u)) calc(0.8 * var(--u)); }
   /* The square board, as big as the screen allows under the header and seat tiles. */
   .board-col .ring-wrap { width: min(100%, calc(100dvh - 190px - env(safe-area-inset-top) - env(safe-area-inset-bottom))); margin: 0 auto; }
   .side { position: fixed; left: 8px; right: 8px; bottom: max(8px, env(safe-area-inset-bottom)); z-index: 40; display: flex; flex-direction: column; gap: 8px; max-height: 70dvh; overflow-y: auto; pointer-events: none; }

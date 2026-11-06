@@ -4,7 +4,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { board, type Board } from '../shared/board';
 
-const GROUPS = ['Brown', 'Sky', 'Pink', 'Orange', 'Green', 'Gold', 'Public'];
+const GROUPS = ['Brown', 'Sky', 'Pink', 'Orange', 'Teal', 'Green', 'Purple', 'Gold', 'Public'];
 const LUCKY_KINDS: Record<string, string> = { bank: 'Bank', pay_each: 'PayEach', collect_each: 'CollectEach', to_start: 'ToStart', to_jail: 'ToJail', move: 'Move', repairs: 'Repairs' };
 const KINDS: Record<string, string> = { start: 'Start', city: 'City', lucky: 'Lucky', public: 'Public', jail: 'Jail', auction: 'Auction' };
 export const BOARD_RS = resolve(import.meta.dirname, '../programs/bankroll/src/board.rs');

@@ -34,7 +34,7 @@ function encodedTable(overrides: Record<string, unknown> = {}) {
     max_players: 3, target: new BN(3000), player_count: 3, lobby_deadline: zero, last_action_at: new BN(1000), stage: { Idle: {} },
     stage_deadline: zero, turn: 0, order: [2, 0, 1, 3], round: 4, rolls_this_turn: 0, extra_roll: false, vrf_purpose: { None: {} },
     vrf_requested_at: zero, last_roll: 6, last_card: 0, elimination_seq: 0, ended_at: new BN(1200),
-    seats: [0, 1, 2, 3].map(seat), board: Array.from({ length: 24 }, () => ({ owner: NO_OWNER, buildings: 0 })),
+    seats: [0, 1, 2, 3].map(seat), board: Array.from({ length: 28 }, () => ({ owner: NO_OWNER, buildings: 0 })),
     trade: { space: 0, offers: [0, 0, 0, 0], deadline: zero }, ...overrides,
   };
   return { raw, wallets };
@@ -77,7 +77,7 @@ test('expectedPayouts mirrors the program for ranks, ties, eliminations and dust
   four.seats.forEach((seat, index) => { seat.cash = [4000, 4000, 4000, 1000][index]; });
   assert.deepEqual(expectedPayouts(four).payouts, [1_293_333, 1_293_333, 1_293_333, 0]);
   const owned = await decoded();
-  owned.board[23] = { owner: 1, buildings: 2 };
+  owned.board[27] = { owner: 1, buildings: 2 };
   assert.equal(netWorth(owned, 1), 2000 + 400 + 2 * 200);
 });
 
@@ -171,7 +171,7 @@ test('jail turns and the Lucky card decode, and the deck matches the frozen econ
   assert.equal(view.seats[2].jailTurns, 2);
   assert.equal(board.luckyDeck.length, 12);
   assert.equal(board.luckyDeck[view.lastCard - 1].text, 'Move forward 3 (resolve the space you land on).');
-  assert.deepEqual([board.rules.jailSpace, board.rules.jailTurns, board.rules.bail, board.rules.saleBps], [6, 3, 150, 8000]);
+  assert.deepEqual([board.rules.jailSpace, board.rules.jailTurns, board.rules.bail, board.rules.saleBps], [7, 3, 150, 8000]);
 });
 
 test('rent, sale value and build checks mirror the program', async () => {
@@ -188,14 +188,15 @@ test('rent, sale value and build checks mirror the program', async () => {
   }
   assert.equal(canBuild(view, 1, 1), false, 'four houses and a hotel at most');
   assert.equal(saleValue(view, 1), Math.floor((60 + 5 * 50) * 0.8));
-  view.board[23] = { owner: 0, buildings: 3 };
-  view.board[21] = { owner: 0, buildings: 0 };
-  assert.equal(rent(view, 23), 440);
-  view.board[21].owner = NO_OWNER;
-  assert.equal(rent(view, 23), 40, 'a broken group pays base rent');
-  for (const [count, space] of [4, 10, 16, 22].entries()) {
+  view.board[27] = { owner: 0, buildings: 3 };
+  view.board[25] = { owner: 0, buildings: 0 };
+  view.board[26] = { owner: 0, buildings: 0 };
+  assert.equal(rent(view, 27), 440);
+  view.board[25].owner = NO_OWNER;
+  assert.equal(rent(view, 27), 40, 'a broken group pays base rent');
+  for (const [count, space] of [3, 10, 17, 24].entries()) {
     view.board[space] = { owner: 2, buildings: 0 };
-    assert.equal(rent(view, 4), 25 * (count + 1));
+    assert.equal(rent(view, 3), 25 * (count + 1));
   }
   view.seats[1].cash = 49;
   view.board[1].buildings = 0;
