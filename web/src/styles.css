@@ -113,7 +113,10 @@ legend { font-weight: 800; font-stretch: 75%; text-transform: uppercase; margin-
 .table-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; padding: 0 0 12px; }
 .table-head h1 { font-size: 2.2rem; margin: 0; }
 .table-head p { color: var(--mid); margin: 0; font-weight: 600; }
-.link-state { margin-left: auto; font-size: .78rem; font-weight: 800; text-transform: uppercase; color: var(--green); }
+.sound-toggle { margin-left: auto; background: none; border: 2px solid var(--ink); padding: 2px 8px; cursor: pointer; font-size: .72rem; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+.sound-toggle::before { content: ''; display: inline-block; width: 0; height: 0; margin-right: 6px; border: 5px solid transparent; border-right-color: currentColor; border-left-width: 0; vertical-align: -1px; }
+.sound-toggle.off { color: var(--mid); border-color: var(--mid); text-decoration: line-through; }
+.link-state { font-size: .78rem; font-weight: 800; text-transform: uppercase; color: var(--green); }
 .link-state::before { content: ''; display: inline-block; width: 8px; height: 8px; background: currentColor; margin-right: 6px; }
 .link-state.offline { color: var(--red); }
 .alert { background: var(--yellow); color: var(--ink); border: var(--rule) solid var(--ink); padding: 10px 14px; margin: 0 0 12px; font-weight: 700; }

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 
 import { board, isProperty } from '../../shared/board';
 import { spacesFor } from '../../shared/themes';
 import { NO_OWNER, rent, type TableView } from '../../shared/chain';
+import { sounds } from './sound';
 
 /** Bauhaus palette: seats are red, blue, yellow and black; each takes the ink in SEAT_INK on top. */
 export const SEAT_COLORS = ['#E03C28', '#1D4ED8', '#FFC21A', '#111111'];
@@ -98,14 +99,16 @@ export function useDie(view: TableView | undefined, requested: boolean) {
       if (!startedAt.current) startedAt.current = Date.now();
       settleAt.current = Number.MAX_SAFE_INTEGER;
       setTumbling(true);
-      const timer = setInterval(() => setFace(1 + Math.floor(Math.random() * 6)), 90);
+      const timer = setInterval(() => { setFace(1 + Math.floor(Math.random() * 6)); sounds.clack(); }, 90);
       return () => clearInterval(timer);
     }
-    const wait = Math.max(0, startedAt.current + 700 - Date.now());
+    const wait = Math.max(0, startedAt.current + 700 - Date.now()), thrown = startedAt.current > 0;
     startedAt.current = 0;
     settleAt.current = Date.now() + wait;
-    const timer = setTimeout(() => { setTumbling(false); if (view?.lastRoll) setFace(view.lastRoll); }, wait);
-    return () => clearTimeout(timer);
+    // The rattle keeps going for as long as the die still tumbles on screen.
+    const rattle = thrown ? setInterval(() => sounds.clack(), 90) : undefined;
+    const timer = setTimeout(() => { clearInterval(rattle); setTumbling(false); if (view?.lastRoll) setFace(view.lastRoll); if (thrown) sounds.settle(); }, wait);
+    return () => { clearTimeout(timer); clearInterval(rattle); };
   }, [rolling, view?.lastRoll, view?.vrfNonce]);
   return { face, tumbling, settleAt };
 }
@@ -115,19 +118,24 @@ export function useDie(view: TableView | undefined, requested: boolean) {
 export function useTokenPositions(view: TableView | undefined, settleAt: { current: number }) {
   const goal = useRef<number[]>([]);
   goal.current = view?.seats.map(seat => seat.position) ?? [];
-  const [shown, setShown] = useState<number[]>(goal.current);
+  const [shown, setShown] = useState<number[]>(goal.current), current = useRef(shown);
   useEffect(() => {
     const timer = setInterval(() => {
       if (Date.now() < settleAt.current) return;
-      setShown(previous => {
-        const next = goal.current.map((target, seat) => {
-          const at = previous[seat] ?? target;
-          if (at === target) return at;
-          const ahead = (target - at + 24) % 24;
-          return ahead <= 9 ? (at + 1) % 24 : target;
-        });
-        return next.length === previous.length && next.every((value, seat) => value === previous[seat]) ? previous : next;
+      const previous = current.current;
+      let stepLeft = -1, landed = false;
+      const next = goal.current.map((target, seat) => {
+        const at = previous[seat] ?? target;
+        if (at === target) return at;
+        const ahead = (target - at + 24) % 24, to = ahead <= 9 ? (at + 1) % 24 : target;
+        if (to === target) landed = true; else stepLeft = Math.max(stepLeft, ahead - 1);
+        return to;
       });
+      if (next.length === previous.length && next.every((value, seat) => value === previous[seat])) return;
+      // Sounds only for a walk or jump seen on screen, never for the first snapshot.
+      if (previous.length === next.length) { if (landed) sounds.land(); else if (stepLeft >= 0) sounds.step(stepLeft); }
+      current.current = next;
+      setShown(next);
     }, 170);
     return () => clearInterval(timer);
   }, [settleAt]);

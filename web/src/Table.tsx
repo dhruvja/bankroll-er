@@ -6,6 +6,7 @@ import { PROTOCOL_FEE_BPS, TOKEN_SCALE, WITHDRAW_MINIMUM } from '../../shared/co
 import { THEMES, spacesFor } from '../../shared/themes';
 import { NO_OFFER, NO_OWNER, canBuild, currentSeat, expectedPayouts, isActive, netWorth, rent, saleValue, tradeOffers, tradeable, type TableView } from '../../shared/chain';
 import { acceptTrade, act, canReceive, client, friendlyError, joinTable, property, runCrank, subscribeTable, tableTransactions, trade, watchTableTransactions, type TableTransaction } from './lib/game';
+import { useSoundToggle } from './sound';
 import { Board, Die, GROUP_COLORS, GROUP_INK, SEAT_COLORS, SEAT_INK, money, useDie, useTokenPositions, type Highlight } from './Board';
 import { PublicKey } from '@solana/web3.js';
 
@@ -181,6 +182,7 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
       <div className="table-head">
         <h1>Table {view.index + 1}</h1>
         <p>{demo ? '' : `${usdc(view.entry)} USDC entry, ${usdc(view.entry * view.playerCount)} pot, `}{THEMES[view.theme]?.name ?? 'Classic'} board, first to {money(view.target)} net worth</p>
+        <SoundToggle />
         <span className={`link-state${connected ? '' : ' offline'}`} data-testid="connection">{connected ? 'Live' : 'Reconnecting…'}</span>
       </div>
       {tradeAlert && <div className="alert" role="status" data-testid="trade-alert">
@@ -240,6 +242,11 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
       </div>
     </div>
   );
+}
+
+function SoundToggle() {
+  const [muted, toggle] = useSoundToggle();
+  return <button type="button" className={`sound-toggle${muted ? ' off' : ''}`} data-testid="sound-toggle" aria-pressed={!muted} onClick={toggle}>{muted ? 'Sound off' : 'Sound on'}</button>;
 }
 
 function Center({ view, seat, myTurn, left, now, busy, die, card, timedOut, demo, onRoll, onBail, onStart, onCancel, onBuy, onPass }: {
