@@ -19,26 +19,14 @@ const GROUP_SHAPES: Record<string, string> = {
 };
 export const money = (value: number) => `${value < 0 ? '−' : ''}$${Math.abs(value).toLocaleString('en-US')}`;
 
-/** Grid cell (row, column) of each space on a `columns`×`rows` ring: Start bottom right, then
- * clockwise along the bottom, up the left, across the top and down the right. Desktop is the 7×7
- * square; phones use a tall 5×9 ring so the board fills the screen with bigger spaces. */
-export function ringCell(index: number, columns: number, rows: number): [number, number] {
-  const left = columns - 1, top = left + rows - 1, right = top + columns - 1;
-  if (index <= left) return [rows, columns - index];
-  if (index <= top) return [rows - (index - left), 1];
-  if (index <= right) return [1, 1 + (index - top)];
-  return [1 + (index - right), columns];
-}
-
-const PHONE = '(max-width: 979px)';
-function usePhone() {
-  const [phone, setPhone] = useState(() => matchMedia(PHONE).matches);
-  useEffect(() => {
-    const query = matchMedia(PHONE), update = () => setPhone(query.matches);
-    query.addEventListener('change', update);
-    return () => query.removeEventListener('change', update);
-  }, []);
-  return phone;
+/** Grid cell (row, column) of each space on the 7×7 ring: Start bottom right, then clockwise
+ * along the bottom, up the left, across the top and down the right. Corners are Start, Jail,
+ * Auction and the last Lucky space. */
+export function ringCell(index: number): [number, number] {
+  if (index <= 6) return [7, 7 - index];
+  if (index <= 12) return [7 - (index - 6), 1];
+  if (index <= 18) return [1, 1 + (index - 12)];
+  return [1 + (index - 18), 7];
 }
 
 /** Spaces whose label sits low, so a token parks higher on them. */
@@ -58,11 +46,11 @@ export function Board({ view, positions, highlights, selected, onSelect, childre
   view: TableView; positions: number[]; highlights: Map<number, { kind: Highlight; seat: number }>; selected?: number;
   onSelect: (space: number) => void; children: ReactNode;
 }) {
-  const live = view.phase !== 'lobby', [columns, rows] = usePhone() ? [5, 9] : [7, 7], spaces = spacesFor(view.theme);
+  const live = view.phase !== 'lobby', spaces = spacesFor(view.theme);
   return (
-    <div className="ring-wrap"><div className={`ring${rows > columns ? ' tall' : ''}`} data-testid="board" style={{ '--cols': columns, '--rows': rows } as CSSProperties}>
+    <div className="ring-wrap"><div className="ring" data-testid="board">
       {spaces.map(space => {
-        const [row, column] = ringCell(space.index, columns, rows), lot = view.board[space.index], owned = live && lot.owner !== NO_OWNER;
+        const [row, column] = ringCell(space.index), lot = view.board[space.index], owned = live && lot.owner !== NO_OWNER;
         const mark = highlights.get(space.index);
         const style = { gridRow: row, gridColumn: column, '--group': space.group ? GROUP_COLORS[space.group] : 'transparent',
           '--group-ink': space.group ? GROUP_INK[space.group] : 'inherit', '--owner': owned ? SEAT_COLORS[lot.owner] : 'transparent',
@@ -84,7 +72,7 @@ export function Board({ view, positions, highlights, selected, onSelect, childre
       })}
       {live && view.seats.map((seat, index) => {
         if (seat.eliminatedAt) return null;
-        const at = positions[index] ?? seat.position, [row, column] = ringCell(at, columns, rows);
+        const at = positions[index] ?? seat.position, [row, column] = ringCell(at);
         const stack = view.seats.filter((other, at) => !other.eliminatedAt && (positions[at] ?? other.position) === (positions[index] ?? seat.position)).indexOf(seat);
         const corner = LOW_LABEL.has(spaces[at].kind) ? 1 : 0;
         const style = { '--row': row - 1, '--col': column - 1, '--stack': stack, '--corner': corner, background: SEAT_COLORS[index], color: SEAT_INK[index] } as CSSProperties;
