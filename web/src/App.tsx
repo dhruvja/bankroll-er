@@ -8,6 +8,7 @@ import { exportWallet } from './lib/wallet';
 import { GROUP_COLORS, SEAT_COLORS, money } from './Board';
 import { THEMES, spacesFor } from '../../shared/themes';
 import { TableScreen, lastGamePath, navigate, useBusy, usdc } from './Table';
+import { Rules } from './Rules';
 
 function usePath() {
   const [path, setPath] = useState(location.pathname);
@@ -34,7 +35,7 @@ export default function App() {
   return (
     <>
       <header className={`topbar${match ? ' on-table' : ''}`}>
-        <a className="wordmark" href={home} onClick={event => { event.preventDefault(); navigate(home); }}>Bankroll{demo && <span className="demo-tag">Demo</span>}</a>
+        <a className="wordmark" href={home} onClick={event => { event.preventDefault(); navigate(home); }}><img className="logo-mark" src="/favicon.svg" alt="" />Bankroll{demo && <span className="demo-tag">Demo</span>}</a>
         {!demo && <button className="wallet-chip" data-testid="wallet-button" onClick={openWalletSheet}>
           <span className="chip-label">Play balance</span>
           <span className="chip-value" data-testid="wallet-play-chip">{info?.play === null || info?.play === undefined ? '…' : `${info.play.toFixed(2)} USDC`}</span>
@@ -103,6 +104,7 @@ function Home({ demo, info, refresh, openWallet }: { demo: boolean; info?: Walle
           {!demo && <Payouts />}
         </div>
       </div>
+      <section className="panel" id="rules" data-testid="home-rules"><h2>How to play</h2><Rules demo={demo} /></section>
     </div>
   );
 }

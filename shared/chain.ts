@@ -175,7 +175,7 @@ export function expectedPayouts(table: TableView): { payouts: number[]; treasury
 }
 
 export type InstructionName = 'create_table' | 'delegate_table' | 'open_table' | 'join_table' | 'cancel_or_expire' | 'refund_player'
-  | 'start_game' | 'roll' | 'buy' | 'pass' | 'build' | 'sell' | 'pay_bail' | 'open_trade' | 'offer_trade' | 'accept_trade'
+  | 'start_game' | 'roll' | 'buy' | 'pass' | 'build' | 'sell' | 'pay_bail' | 'forfeit' | 'open_trade' | 'offer_trade' | 'accept_trade'
   | 'force_timeout' | 'settle' | 'withdraw_fees';
 
 /** Every account name the IDL uses, resolved for one table and one acting wallet. */

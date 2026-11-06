@@ -198,6 +198,13 @@ pub mod bankroll {
             .sell(ctx.accounts.signer.key(), space, Clock::get()?.unix_timestamp)
     }
 
+    /// The signer leaves the game; its properties go back on sale.
+    pub fn forfeit(ctx: Context<TableAction>) -> Result<()> {
+        ctx.accounts
+            .table
+            .forfeit(ctx.accounts.signer.key(), Clock::get()?.unix_timestamp)
+    }
+
     pub fn pay_bail(ctx: Context<TableAction>) -> Result<()> {
         ctx.accounts
             .table

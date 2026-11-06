@@ -515,6 +515,29 @@ impl Table {
         Ok(())
     }
 
+    /// An active seat quits the game at any point of play except while the turn order or its own
+    /// roll is being drawn. It is eliminated like a bankrupt seat: cash to zero and every property
+    /// back on sale without buildings. Its trade offer is withdrawn; if it was the current seat, its
+    /// trade is cancelled and the turn passes on.
+    pub fn forfeit(&mut self, caller: Pubkey, now: i64) -> Result<()> {
+        require!(
+            self.phase == TablePhase::Playing && !matches!(self.stage, Stage::Ordering | Stage::Rolling),
+            GameError::InvalidStage
+        );
+        let seat = self.seat_of(&caller).ok_or(GameError::Unauthorized)?;
+        require!(self.is_active(seat), GameError::Unauthorized);
+        self.require_live(now)?;
+        self.trade.offers[seat] = NO_OFFER;
+        self.eliminate(seat);
+        self.last_action_at = now;
+        if seat == self.current_seat() {
+            self.trade = Trade::default();
+            self.advance_turn(now);
+        }
+        self.check_end(now);
+        Ok(())
+    }
+
     /// A jailed seat pays $150 in its PreRoll and is released; the turn ends without moving.
     pub fn pay_bail(&mut self, caller: Pubkey, now: i64) -> Result<()> {
         let seat = self.acting_seat(caller, &[Stage::PreRoll], now)?;

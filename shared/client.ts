@@ -197,6 +197,8 @@ export class BankrollClient implements PaymentClient {
   build(table: PublicKey, signer: Signer, space: number) { return this.act('build', 'build', table, signer, { space }); }
   sell(table: PublicKey, signer: Signer, space: number) { return this.act('sell', 'sell', table, signer, { space }); }
   payBail(table: PublicKey, signer: Signer) { return this.act('bail', 'pay_bail', table, signer); }
+  /** Leaves the game; the signer's properties go back on sale. */
+  forfeit(table: PublicKey, signer: Signer) { return this.act('forfeit', 'forfeit', table, signer); }
   openTrade(table: PublicKey, signer: Signer, space: number) { return this.act('trade-open', 'open_trade', table, signer, { space }); }
   offerTrade(table: PublicKey, signer: Signer, space: number) { return this.act('trade-offer', 'offer_trade', table, signer, { space }); }
   /** Accepts `seat`'s offer of `space`; fails if that seat has since replaced it. */

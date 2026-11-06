@@ -57,6 +57,7 @@ struct ChaosStats {
     trades_opened: u64,
     offers: u64,
     trades_completed: u64,
+    forfeits: u64,
     cash_flows_checked: u64,
     roll_flows_checked: u64,
 }
@@ -565,7 +566,8 @@ fn chaos_game(table: &mut Table, rng: &mut Rng, game: usize, now: &mut i64, stat
             85..=96 => table.force_timeout(*now),
             97 => table.start(caller, *now),
             98 => table.join(caller, encode_name("late").unwrap(), table.game_nonce, *now),
-            99 => table.refund(rng.below(MAX_SEATS as u64) as usize).map(|_| ()),
+            99 if rng.chance(50) => table.refund(rng.below(MAX_SEATS as u64) as usize).map(|_| ()),
+            99 => table.forfeit(caller, *now),
             100..=105 => {
                 let give = own_space(table, actor, rng);
                 table.open_trade(actor, give, *now)
@@ -592,6 +594,7 @@ fn chaos_game(table: &mut Table, rng: &mut Rng, game: usize, now: &mut i64, stat
             Ok(()) => {
                 stats.accepted += 1;
                 match action {
+                    99 if before.phase == TablePhase::Playing => stats.forfeits += 1,
                     100..=105 => stats.trades_opened += 1,
                     106..=113 => stats.offers += 1,
                     114.. => {
@@ -744,6 +747,7 @@ fn fuzz_ninety_one_thousand_games_on_one_reused_table() {
     println!("{games} games on one Table; final game_nonce {}", table.game_nonce);
     assert_eq!(table.game_nonce as usize, games);
     assert!(stats.trades_completed > 0 && stats.offers > 0, "chaos never completed a trade");
+    assert!(stats.forfeits > 0, "chaos never forfeited");
     assert!(outside_band.is_empty(), "game length outside ±10% of sim.py: {outside_band:?}");
 }
 

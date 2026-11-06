@@ -30,7 +30,8 @@ button, input { font: inherit; color: inherit; }
 :focus-visible { outline: 3px solid var(--blue); outline-offset: 2px; }
 
 .topbar { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; max-width: 1180px; margin: 0 auto 14px; padding: 14px 16px 10px; border-bottom: var(--rule) solid var(--ink); }
-.wordmark { font-weight: 900; font-stretch: 62%; font-size: 2.6rem; line-height: .85; text-decoration: none; text-transform: uppercase; }
+.wordmark { display: inline-flex; align-items: center; gap: 10px; font-weight: 900; font-stretch: 62%; font-size: 2.6rem; line-height: .85; text-decoration: none; text-transform: uppercase; }
+.logo-mark { height: .9em; width: auto; flex: none; }
 .wallet-chip { display: flex; flex-direction: column; align-items: flex-end; background: var(--ink); color: var(--white); border: 0; border-radius: 0; padding: 5px 12px; cursor: pointer; }
 .chip-label { font-size: .68rem; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; opacity: .8; }
 .chip-value { font-weight: 900; font-size: 1.05rem; }
@@ -122,6 +123,19 @@ legend { font-weight: 800; font-stretch: 75%; text-transform: uppercase; margin-
   font-weight: 800; font-size: 1.05rem; text-align: left; animation: toast-in .25s ease-out; pointer-events: none; }
 @keyframes toast-in { from { transform: translate(-50%, -16px); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .rent-toast { animation: none; } }
+.head-act { flex: none; background: var(--white); border: 2px solid var(--ink); padding: 2px 8px; cursor: pointer; font-size: .72rem; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
+.head-act.quit { border-color: var(--red); color: var(--red); }
+.btn.danger { background: var(--red); color: var(--white); }
+.confirm { border-color: var(--red); }
+.confirm h2 { margin-top: 0; }
+.rules h3 { margin: 16px 0 4px; font-size: 1.15rem; font-weight: 900; font-stretch: 75%; text-transform: uppercase; }
+.rules h3:first-child { margin-top: 4px; }
+.rules p, .rules ul { margin: 0; line-height: 1.45; }
+.rules ul { padding-left: 18px; }
+.rules li { margin: 3px 0; }
+.rules-sheet { align-items: stretch; }
+#rules { margin-top: 16px; }
+.rules-sheet .rules { max-width: 640px; }
 .invite-sheet { position: fixed; inset: 0; z-index: 60; background: var(--paper); overflow-y: auto; padding: 18px 20px 28px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
 .invite-sheet header { position: relative; align-self: stretch; border-bottom: var(--rule) solid var(--ink); padding-bottom: 8px; }
 .invite-sheet h2 { margin: 0; font-size: 2rem; }
@@ -154,6 +168,7 @@ legend { font-weight: 800; font-stretch: 75%; text-transform: uppercase; margin-
 }
 .ring.tall { --h: min(176cqi, 100dvh - 146px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); --u: min(1.32cqi, var(--h) / 133); }
 /* Short phones: shorter seat tiles, so the board keeps the room. */
+@media (max-width: 400px) { .table-head .head-act.quit .label { font-size: 0; } .table-head .head-act.quit .label::before { content: '⚑'; font-size: 1rem; } }
 @media (max-width: 979px) and (max-height: 740px) { .seat-note { display: none; } .ring.tall { --h: min(176cqi, 100dvh - 130px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); } }
 .cell {
   position: relative; display: flex; flex-direction: column; align-items: stretch; min-width: 0; overflow: hidden; padding: 0; text-align: left; cursor: pointer;
@@ -259,12 +274,19 @@ legend { font-weight: 800; font-stretch: 75%; text-transform: uppercase; margin-
   main.on-table .table-grid { flex: 1; align-content: center; padding-bottom: 8px; }
   .table-head { flex-wrap: nowrap; align-items: center; gap: 8px; padding: 8px 0 6px; }
   .head-home { display: block; font-size: 1.6rem; font-weight: 900; text-decoration: none; line-height: 1; padding: 0 4px; }
-  .head-title { display: block; min-width: 0; flex: 1; }
-  .table-head h1 { font-size: 1.4rem; line-height: 1; }
+  .head-title { display: block; min-width: 0; flex: 1; overflow: hidden; }
+  .table-head h1 { font-size: 1.3rem; line-height: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .table-head p { font-size: .7rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .head-btn { display: block; flex: none; }
   .sound-toggle { margin-left: 0; padding: 6px 8px; flex: none; }
   .sound-toggle .label, .link-state { font-size: 0; }
+  .head-act { padding: 6px 9px; font-size: .8rem; }
+  .head-act .label { font-size: 0; }
+  .head-act:not(.quit) .label::before { content: '?'; font-size: .95rem; }
+  .head-act.quit .label { font-size: .72rem; }
+  .head-act.quit { padding: 6px 6px; font-size: .72rem; }
+  .table-head { gap: 6px; }
+  .head-btn { padding: 6px 10px; }
   .sound-toggle::before { margin-right: 0; }
   .link-state::before { margin-right: 0; }
   main.on-table .alert { padding: 6px 10px; margin-bottom: 6px; font-size: .85rem; }

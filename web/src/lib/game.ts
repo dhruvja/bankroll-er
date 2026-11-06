@@ -102,10 +102,10 @@ export async function joinTable(table: string, nonce: number, name: string, entr
   record(await client.joinTable(new PublicKey(table), player, nonce, name));
 }
 
-type Action = 'start' | 'roll' | 'buy' | 'pass' | 'bail' | 'cancel';
+type Action = 'start' | 'roll' | 'buy' | 'pass' | 'bail' | 'cancel' | 'forfeit';
 export async function act(table: string, action: Action) {
   const signer = await wallet(), address = new PublicKey(table);
-  const run = { start: client.startGame, roll: client.roll, buy: client.buy, pass: client.pass, bail: client.payBail, cancel: client.cancel }[action];
+  const run = { start: client.startGame, roll: client.roll, buy: client.buy, pass: client.pass, bail: client.payBail, cancel: client.cancel, forfeit: client.forfeit }[action];
   return record(await run.call(client, address, signer));
 }
 

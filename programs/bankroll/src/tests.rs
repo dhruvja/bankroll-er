@@ -1231,3 +1231,51 @@ fn open_records_the_board_theme() {
         assert_eq!(table.theme, theme);
     }
 }
+
+#[test]
+fn forfeit_frees_the_seats_properties_passes_its_turn_and_can_end_the_game() {
+    let w = wallets();
+    let mut table = playing(3, 7000);
+    table.board[1] = Lot { owner: 0, buildings: 0 };
+    table.board[2] = Lot { owner: 0, buildings: 2 };
+    table.board[5] = Lot { owner: 1, buildings: 0 };
+    let before = table.clone();
+    assert!(table.forfeit(w[3], T0 + 1).is_err(), "not seated");
+    assert!(table.forfeit(w[0], T0 + IDLE_SECONDS).is_err(), "past the idle deadline");
+    table.roll(w[0], T0 + 1).unwrap();
+    assert!(table.forfeit(w[0], T0 + 1).is_err(), "not while the roll is being drawn");
+    assert!(table.forfeit(w[1], T0 + 1).is_err(), "nobody while a roll is being drawn");
+    let mut table = before;
+
+    // Seat 1 quits on seat 0's turn: its property goes back on sale, the turn stays with seat 0.
+    table.forfeit(w[1], T0 + 1).unwrap();
+    assert!(!table.is_active(1) && table.seats[1].cash == 0);
+    assert_eq!(table.board[5], Lot::default());
+    assert_eq!((table.current_seat(), table.stage, table.last_action_at), (0, Stage::PreRoll, T0 + 1));
+    assert!(table.forfeit(w[1], T0 + 2).is_err(), "already out");
+
+    // Seat 0 quits on its own turn: both lots and the buildings are freed and, with one seat
+    // left, the game ends.
+    table.forfeit(w[0], T0 + 2).unwrap();
+    assert_eq!((table.board[1], table.board[2]), (Lot::default(), Lot::default()));
+    assert_eq!(table.phase, TablePhase::Finished);
+    assert!(table.forfeit(w[2], T0 + 3).is_err(), "the game is over");
+    let payouts = table.payouts().unwrap();
+    assert!(payouts[2] > payouts[0] && payouts[0] > payouts[1], "the last seat standing wins; the first to quit ranks last");
+}
+
+#[test]
+fn forfeit_during_a_trade_withdraws_the_offer_or_cancels_the_lander_trade() {
+    let w = wallets();
+    let mut table = auction(4, 7000, 10, 2, &HOLDINGS);
+    table.open_trade(w[0], 14, T0 + 2).unwrap();
+    table.offer_trade(w[1], 1, T0 + 3).unwrap();
+    table.offer_trade(w[2], 17, T0 + 3).unwrap();
+    table.forfeit(w[1], T0 + 4).unwrap();
+    assert_eq!(table.trade.offers, [NO_OFFER, NO_OFFER, 17, NO_OFFER], "the quitter's offer is gone");
+    assert_eq!(table.stage, Stage::TradeOffers, "the trade goes on");
+    table.forfeit(w[0], T0 + 5).unwrap();
+    assert_eq!(table.trade, Trade::default(), "the lander's trade is cancelled");
+    assert_eq!((table.phase, table.current_seat(), table.stage), (TablePhase::Playing, 2, Stage::PreRoll), "the turn passes on");
+    assert_eq!((table.board[14], table.board[17].owner), (Lot::default(), 2), "the lander's lots are free, the offerer keeps its own");
+}

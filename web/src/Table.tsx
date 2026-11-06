@@ -7,6 +7,7 @@ import { THEMES, spacesFor } from '../../shared/themes';
 import { NO_OFFER, NO_OWNER, canBuild, currentSeat, expectedPayouts, isActive, netWorth, rent, saleValue, tradeOffers, tradeable, type TableView } from '../../shared/chain';
 import { acceptTrade, act, canReceive, client, friendlyError, joinTable, property, runCrank, subscribeTable, tableTransactions, trade, watchTableTransactions, type TableTransaction } from './lib/game';
 import { sounds, useSoundToggle } from './sound';
+import { RulesSheet } from './Rules';
 import { Board, Die, GROUP_COLORS, GROUP_INK, SEAT_COLORS, SEAT_INK, money, useDie, useTokenPositions, type Highlight } from './Board';
 import { PublicKey } from '@solana/web3.js';
 
@@ -86,7 +87,10 @@ function useFeed(view: TableView | undefined, key: string) {
       if (!was) return;
       if (seat.strikes > was.strikes) added.push({ at, kind: 'strike', text: `${seat.name} ran out of time (strike ${seat.strikes} of ${board.rules.strikesToForfeit})` });
       if (seat.jailTurns > 0 && was.jailTurns === 0) added.push({ at, kind: 'jail', text: `${seat.name} went to jail` });
-      if (seat.eliminatedAt && !was.eliminatedAt) added.push({ at, kind: 'out', text: seat.strikes >= board.rules.strikesToForfeit ? `${seat.name} forfeited after ${board.rules.strikesToForfeit} strikes` : `${seat.name} went bankrupt` });
+      // A forfeit is the only way out with no payment behind it: not a roll, a swap, a bail or a seat already in debt.
+      const bankrupt = before.stage === 'rolling' || moved.length > 0 || was.cash < 0 || (was.jailTurns > 0 && seat.jailTurns === 0);
+      if (seat.eliminatedAt && !was.eliminatedAt) added.push({ at, kind: 'out', text: seat.strikes >= board.rules.strikesToForfeit ? `${seat.name} forfeited after ${board.rules.strikesToForfeit} strikes`
+        : bankrupt ? `${seat.name} went bankrupt` : `${seat.name} forfeited; their properties are for sale` });
     });
     if (before.phase === 'playing' && view.phase !== 'playing') added.push({ at, kind: 'end', text: 'Game over' });
     if (!added.length) return;
@@ -99,11 +103,11 @@ function useFeed(view: TableView | undefined, key: string) {
   return feed;
 }
 
-/** The newest rent payment, shown for a few seconds once every token has finished walking. */
+/** The newest rent payment or player out, shown for a few seconds once every token has finished walking. */
 function useRentToast(feed: FeedEntry[], landed: boolean) {
   const seen = useRef(feed[0]?.at ?? 0), [queue, setQueue] = useState<FeedEntry[]>([]), [shown, setShown] = useState<FeedEntry>();
   useEffect(() => {
-    const fresh = feed.filter(entry => entry.kind === 'rent' && entry.at > seen.current).reverse();
+    const fresh = feed.filter(entry => (entry.kind === 'rent' || entry.kind === 'out') && entry.at > seen.current).reverse();
     seen.current = Math.max(seen.current, feed[0]?.at ?? 0);
     if (fresh.length) setQueue(current => [...current, ...fresh]);
   }, [feed]);
@@ -145,7 +149,7 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
   const { view, connected, readError } = useTable(table);
   const { busy, error, run } = useBusy(), now = useNow();
   const [selected, setSelected] = useState<number>(), [requested, setRequested] = useState(false), [name, setName] = useState('');
-  const [inviteOpen, setInviteOpen] = useState(false);
+  const [inviteOpen, setInviteOpen] = useState(false), [rulesOpen, setRulesOpen] = useState(false), [quitting, setQuitting] = useState(false);
   const seat = view ? view.seats.findIndex(item => item.wallet === me) : -1, current = view && nonce === view.gameNonce;
   const feed = useFeed(current ? view : undefined, `bankroll.feed.${table}.${nonce}`);
   const card = useDrawnCard(current ? view : undefined);
@@ -194,6 +198,7 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
     if (kind === 'roll') setRequested(true);
     try { await act(table, kind); } finally { setRequested(false); }
   });
+  const canQuit = view.phase === 'playing' && view.stage !== 'ordering' && seat >= 0 && isActive(view, seat);
   const turnSeat = currentSeat(view), myTurn = view.phase === 'playing' && seat === turnSeat && view.stage !== 'ordering';
   const deadline = view.phase === 'lobby' ? view.lobbyDeadline : view.stage === 'tradeoffers' && now < view.trade.deadline && seat !== turnSeat ? view.trade.deadline : view.stageDeadline;
   const left = Math.max(0, Math.ceil(deadline - now));
@@ -211,10 +216,13 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
         </div>
         <SoundToggle />
         <span className={`link-state${connected ? '' : ' offline'}`} data-testid="connection">{connected ? 'Live' : 'Reconnecting…'}</span>
+        <button type="button" className="head-act" data-testid="rules-open" onClick={() => setRulesOpen(true)} aria-label="How to play"><span className="label">Rules</span></button>
+        {canQuit && <button type="button" className="head-act quit" data-testid="forfeit-open" onClick={() => setQuitting(true)} aria-label="Forfeit"><span className="label">Forfeit</span></button>}
         {!demo && <button type="button" className="head-btn" onClick={openWallet}>Wallet</button>}
-        <button type="button" className="head-btn invite-btn" data-testid="invite-open" onClick={() => setInviteOpen(true)}>Invite</button>
+        {!canQuit && <button type="button" className="head-btn invite-btn" data-testid="invite-open" onClick={() => setInviteOpen(true)}>Invite</button>}
       </div>
       {inviteOpen && <InviteSheet invite={invite} onClose={() => setInviteOpen(false)} />}
+      {rulesOpen && <RulesSheet demo={demo} onClose={() => setRulesOpen(false)} />}
       {tradeAlert && <div className="alert" role="status" data-testid="trade-alert">
         {view.stage === 'tradeopen' ? `${view.seats[turnSeat].name} landed on Auction and is picking a property to trade.`
           : `${view.seats[turnSeat].name} puts ${spacesFor(view.theme)[view.trade.space].name} up for a swap. Make an offer within ${Math.max(0, Math.ceil(view.trade.deadline - now))}s.`}
@@ -235,6 +243,15 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
         <div className="side">
           <Players view={view} me={me} />
           {error && <p className="error pop" role="alert" data-testid="error">{error}</p>}
+          {quitting && canQuit && <section className="panel confirm pop" data-testid="forfeit-confirm">
+            <h2>Forfeit the game?</h2>
+            <p>You are out for good, and everything you own goes back on sale for the others.{demo ? '' : ' You rank below everyone still playing.'}</p>
+            <div className="actions">
+              <button className="btn danger" data-testid="forfeit-confirm-button" disabled={busy || view.stage === 'rolling'}
+                onClick={() => void run(async () => { await act(table, 'forfeit'); setQuitting(false); })}>{view.stage === 'rolling' ? 'Wait for the roll…' : 'Forfeit'}</button>
+              <button className="btn" onClick={() => setQuitting(false)}>Keep playing</button>
+            </div>
+          </section>}
 
           {view.phase === 'lobby' && seat < 0 && view.playerCount < view.maxPlayers && <JoinForm view={view} name={name} setName={setName} busy={busy} demo={demo} openWallet={openWallet}
             onJoin={() => void run(async () => { await joinTable(table, nonce, name.trim(), view.entry); if (!demo) refresh(); })} />}
@@ -460,7 +477,7 @@ function PropertyCard({ view, space: index, seat, heading, onClose, children }: 
   if (!isProperty(space)) return (
     <section className="panel deed plain" data-testid="property-card">
       <header><b>{space.name}</b>{onClose && <button className="close" onClick={onClose} aria-label="Close">×</button>}</header>
-      <p className="quiet">{space.kind === 'lucky' ? 'Draw a Lucky card.' : space.kind === 'jail' ? `Visiting is free. Sent here, you sit out ${board.rules.jailTurns} turns or pay ${money(board.rules.bail)}.`
+      <p className="quiet">{space.kind === 'lucky' ? 'Draw a Lucky card.' : space.kind === 'jail' ? `Land here, by roll or card, and you sit out ${board.rules.jailTurns} turns, or pay ${money(board.rules.bail)} bail on your turn.`
         : space.kind === 'auction' ? `Put one of your properties up for a swap. Both sides of a completed swap get ${money(board.rules.tradeBonus)}.` : `Collect ${money(board.rules.salary)} each time you pass.`}</p>
     </section>
   );
