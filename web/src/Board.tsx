@@ -36,7 +36,7 @@ const LOW_LABEL = new Set(['start', 'jail', 'auction', 'lucky']);
 const SPACES = board.spaces.length;
 const SHORT: Record<string, string> = {
   'Lucky Card': 'Lucky', 'Power Plant': 'Power', 'New York': 'New York',
-  Malleshwaram: 'Malle\u00ADshwaram', Koramangala: 'Kora\u00ADmangala', Indiranagar: 'Indira\u00ADnagar', Jayanagar: 'Jaya\u00ADnagar',
+  Malleshwaram: 'Malle\u00ADshwaram', Koramangala: 'Kora\u00ADmangala', Indiranagar: 'Indira\u00ADnagar', Jayanagar: 'Jaya\u00ADnagar', Basavanagudi: 'Basava\u00ADnagudi', 'Sarjapur Road': 'Sarjapur Road',
   Yelahanka: 'Yela\u00ADhanka', Bellandur: 'Bellan\u00ADdur', Whitefield: 'White\u00ADfield', Ghatkopar: 'Ghat\u00ADkopar', Borivali: 'Bori\u00ADvali',
   Marathahalli: 'Maratha\u00ADhalli', Sadashivanagar: 'Sadashiva\u00ADnagar', 'Cunningham Road': 'Cunning\u00ADham Road', Goregaon: 'Gore\u00ADgaon',
   'Frazer Town': 'Frazer Town', 'Richmond Town': 'Rich\u00ADmond Town', 'Lower Parel': 'Lower Parel', 'Lavelle Road': 'Lavelle Road',
