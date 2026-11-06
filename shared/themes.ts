@@ -9,10 +9,10 @@ export const THEMES: Theme[] = [
   {
     id: 1, name: 'Bangalore', tagline: 'Peenya to Koramangala',
     names: {
-      1: 'Peenya', 2: 'Yelahanka', 3: 'Namma Metro', 4: 'E-City', 5: 'Marathahalli', 6: 'BTM Layout', 8: 'Jayanagar',
-      9: 'Malleshwaram', 10: 'Airport', 11: 'Hebbal', 12: 'Whitefield', 13: 'JP Nagar', 15: 'Bellandur', 16: 'Sarjapur Road',
-      17: 'BMTC Bus', 18: 'MG Road', 19: 'Frazer Town', 20: 'HSR Layout', 22: 'Sadashivanagar', 23: 'Lavelle Road',
-      24: 'BESCOM', 25: 'Cunningham Road', 26: 'Indiranagar', 27: 'Koramangala',
+      1: 'Peenya', 2: 'Yelahanka', 3: 'BMTC Bus', 4: 'E-City', 5: 'Marathahalli', 6: 'BTM Layout', 8: 'Jayanagar',
+      9: 'Malleshwaram', 10: 'BESCOM', 11: 'Hebbal', 12: 'Whitefield', 13: 'JP Nagar', 15: 'Bellandur', 16: 'Sarjapur Road',
+      17: 'Namma Metro', 18: 'MG Road', 19: 'Frazer Town', 20: 'HSR Layout', 22: 'Sadashivanagar', 23: 'Lavelle Road',
+      24: 'Airport', 25: 'Cunningham Road', 26: 'Indiranagar', 27: 'Koramangala',
     },
   },
   {
