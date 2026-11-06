@@ -7,13 +7,12 @@ export interface Theme { id: number; name: string; tagline: string; names: Recor
 export const THEMES: Theme[] = [
   { id: 0, name: 'Classic', tagline: 'World cities, Lisbon to New York', names: {} },
   {
-    id: 1, name: 'Bangalore', tagline: 'Jayanagar to Koramangala',
-    // Ragebait pricing: Twitter's hyped tech-corridor areas sit on the expensive slots, old Bangalore on the cheap ones.
+    id: 1, name: 'Bangalore', tagline: 'Peenya to Koramangala',
     names: {
-      1: 'Jayanagar', 2: 'Basavanagudi', 3: 'Namma Metro', 4: 'Malleshwaram', 5: 'Frazer Town', 6: 'Sadashivanagar',
-      8: 'Richmond Town', 9: 'Lavelle Road', 10: 'Airport', 11: 'Cunningham Road', 12: 'MG Road', 13: 'Peenya',
-      15: 'Hebbal', 16: 'BTM Layout', 17: 'BMTC Bus', 18: 'E-City', 19: 'Sarjapur Road', 20: 'Marathahalli',
-      22: 'Whitefield', 23: 'Bellandur', 24: 'BESCOM', 25: 'HSR Layout', 26: 'Indiranagar', 27: 'Koramangala',
+      1: 'Peenya', 2: 'Yelahanka', 3: 'Namma Metro', 4: 'E-City', 5: 'Marathahalli', 6: 'BTM Layout', 8: 'Jayanagar',
+      9: 'Malleshwaram', 10: 'Airport', 11: 'Hebbal', 12: 'Whitefield', 13: 'JP Nagar', 15: 'Bellandur', 16: 'Sarjapur Road',
+      17: 'BMTC Bus', 18: 'MG Road', 19: 'Frazer Town', 20: 'HSR Layout', 22: 'Sadashivanagar', 23: 'Lavelle Road',
+      24: 'BESCOM', 25: 'Cunningham Road', 26: 'Indiranagar', 27: 'Koramangala',
     },
   },
   {
