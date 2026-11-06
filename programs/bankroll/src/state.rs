@@ -222,7 +222,7 @@ pub enum GameError {
     CustodyNotEmpty,
     #[msg("You do not own this property")]
     NotYourProperty,
-    #[msg("Build needs a city in a full group with fewer than 3 buildings")]
+    #[msg("Build needs a city in a full group without a hotel yet")]
     CannotBuild,
     #[msg("Only a jailed player can pay bail")]
     NotJailed,

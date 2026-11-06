@@ -60,7 +60,9 @@ export function Board({ view, positions, highlights, selected, onSelect, childre
             {isProperty(space) && <span className="cell-price" title={owned ? 'Rent' : 'Price'}>{owned ? money(rent(view, space.index)) : money(space.price ?? 0)}</span>}
             {isProperty(space) && <span className={`shape ${GROUP_SHAPES[space.group ?? 'Public']}`} aria-hidden="true" />}
             <span className="cell-name">{name}</span>
-            {lot.buildings > 0 && live && <span className="pips" aria-label={`${lot.buildings} buildings`}>{Array.from({ length: lot.buildings }, (_, i) => <i key={i} />)}</span>}
+            {lot.buildings > 0 && live && (lot.buildings === board.rules.maxBuildingsPerCity
+              ? <span className="pips" aria-label="Hotel"><i className="hotel" /></span>
+              : <span className="pips" aria-label={`${lot.buildings} house${lot.buildings > 1 ? 's' : ''}`}>{Array.from({ length: lot.buildings }, (_, i) => <i key={i} />)}</span>)}
             {space.kind === 'start' && <span className="cell-note">+{money(board.rules.salary)}</span>}
           </button>
         );

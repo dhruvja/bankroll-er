@@ -20,9 +20,9 @@ export interface Board {
   luckyDeck: LuckyCard[];
 }
 
-/** Phase 01 frozen economy (sha256 d9fa832e…, checked by tests/ts/board.test.ts). */
+/** Frozen economy, now with four houses and a hotel (sha256 261910d6…, checked by tests/ts/board.test.ts). */
 export const board = boardJson as Board;
-export const BOARD_SHA256 = 'd9fa832e44f743c06b6bacecd8334f1c6025afbdcffd6a07738b40e3237cc4ba';
+export const BOARD_SHA256 = '261910d690e5d4eba1712bd2673237e27728b6e7b7bb9cc35ae2d4a1c7c17370';
 export const isProperty = (space: BoardSpace) => space.kind === 'city' || space.kind === 'public';
 /** Client default only; the program accepts any of the three targets. */
 export const defaultTarget = (players: number) => board.rules.defaultTargetByPlayers[String(players)] ?? board.rules.targets[0];

@@ -34,7 +34,7 @@ pub const TRADE_BONUS: i64 = ${rules.tradeBonus};
 pub const SALE_BPS: i64 = ${rules.saleBps};
 pub const MAX_BUILDINGS: u8 = ${rules.maxBuildingsPerCity};
 pub const GROUP_RENT_MULTIPLIER: i64 = ${rules.groupRentMultiplier};
-pub const BUILDING_RENT_MULTIPLIERS: [i64; 3] = [${rules.buildingRentMultipliers.join(', ')}];
+pub const BUILDING_RENT_MULTIPLIERS: [i64; ${rules.buildingRentMultipliers.length}] = [${rules.buildingRentMultipliers.join(', ')}];
 pub const TARGETS: [u64; 3] = [${rules.targets.join(', ')}];
 pub const SEAT_BONUS_STEPS: [i64; 3] = [${rules.targets.map(target => steps[String(target)]).join(', ')}];
 pub const PREROLL_SECONDS: i64 = ${deadlines.preRoll};

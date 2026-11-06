@@ -182,12 +182,12 @@ test('rent, sale value and build checks mirror the program', async () => {
   view.board[2] = { owner: 1, buildings: 0 };
   assert.equal(rent(view, 1), 12, 'full group doubles');
   assert.equal(canBuild(view, 1, 1), true);
-  for (const [buildings, expected] of [[1, 24], [2, 42], [3, 66]]) {
+  for (const [buildings, expected] of [[1, 24], [2, 42], [3, 66], [4, 96], [5, 132]]) {
     view.board[1].buildings = buildings;
     assert.equal(rent(view, 1), expected);
   }
-  assert.equal(canBuild(view, 1, 1), false, 'at most 3 buildings');
-  assert.equal(saleValue(view, 1), Math.floor((60 + 3 * 50) * 0.8));
+  assert.equal(canBuild(view, 1, 1), false, 'four houses and a hotel at most');
+  assert.equal(saleValue(view, 1), Math.floor((60 + 5 * 50) * 0.8));
   view.board[23] = { owner: 0, buildings: 3 };
   view.board[21] = { owner: 0, buildings: 0 };
   assert.equal(rent(view, 23), 440);

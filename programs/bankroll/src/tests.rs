@@ -803,7 +803,7 @@ fn a_jailed_timeout_serves_the_turn_and_jailed_seats_still_collect_rent() {
 }
 
 #[test]
-fn buildings_need_the_full_group_cap_at_three_and_scale_rent() {
+fn buildings_need_the_full_group_cap_at_a_hotel_and_scale_rent() {
     let mut table = playing(2, 7000);
     table.seats[0].cash = 1000;
     table.board[1].owner = 0;
@@ -815,14 +815,14 @@ fn buildings_need_the_full_group_cap_at_three_and_scale_rent() {
     assert!(table.build(wallets()[0], 30, T0 + 1).is_err(), "no such space");
     assert!(table.build(wallets()[1], 1, T0 + 1).is_err(), "not seat 1's turn");
     let worth = table.net_worth(0);
-    for (built, rent) in [(1u8, 24i64), (2, 42), (3, 66)] {
+    for (built, rent) in [(1u8, 24i64), (2, 42), (3, 66), (4, 96), (5, 132)] {
         table.build(wallets()[0], 1, T0 + 1).unwrap();
         assert_eq!((table.board[1].buildings, table.rent(1)), (built, rent));
     }
-    assert_eq!(table.seats[0].cash, 850);
+    assert_eq!(table.seats[0].cash, 750);
     assert_eq!(table.net_worth(0), worth, "building converts cash into holdings");
     assert_eq!(table.rent(2), 16, "an unbuilt city of a full group pays double");
-    assert!(table.build(wallets()[0], 1, T0 + 1).is_err(), "at most 3 buildings");
+    assert!(table.build(wallets()[0], 1, T0 + 1).is_err(), "four houses and a hotel at most");
     table.seats[0].cash = 49;
     assert!(table.build(wallets()[0], 2, T0 + 1).is_err(), "needs cash >= cost");
     table.seats[0].cash = 1000;

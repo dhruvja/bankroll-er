@@ -178,7 +178,7 @@ const FRIENDLY: Record<string, string> = {
   InvalidStage: 'The table moved on before your move landed.',
   TooEarly: 'That can’t happen yet. Wait for the timer.',
   InsufficientCash: 'Not enough cash for that.',
-  CannotBuild: 'You need the whole color group and cash for the building.',
+  CannotBuild: 'You need the whole color group, cash for the building, and no hotel there yet.',
   CannotTrade: 'Only properties without buildings can be traded.',
   OffersClosed: 'Offers have closed for this trade.',
   OfferChanged: 'That offer was just replaced. Pick from the current offers.',

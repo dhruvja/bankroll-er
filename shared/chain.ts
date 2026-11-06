@@ -119,7 +119,7 @@ export function netWorth(table: TableView, seat: number): number {
 
 const ownsGroup = (table: TableView, seat: number, group: string) => board.groups[group].every(space => table.board[space].owner === seat);
 
-/** Mirrors `Table::rent`: base, doubled for a full group, ×4/×7/×11 with buildings; publics scale with count. */
+/** Mirrors `Table::rent`: base, doubled for a full group, ×4/×7/×11/×16 with 1-4 houses and ×22 with a hotel; publics scale with count. */
 export function rent(table: TableView, index: number): number {
   const space = board.spaces[index], owner = table.board[index].owner, rules = board.rules;
   if (owner === NO_OWNER || !space.rent || !space.group) return 0;

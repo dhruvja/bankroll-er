@@ -74,7 +74,7 @@ function useFeed(view: TableView | undefined, key: string) {
       if (was.owner === NO_OWNER && lot.owner !== NO_OWNER) added.push({ at, kind: 'buy', text: `${name(lot.owner)} bought ${spacesFor(view.theme)[space].name} for ${money(spacesFor(view.theme)[space].price ?? 0)}` });
       else if (was.owner !== NO_OWNER && lot.owner === NO_OWNER && before.phase === 'playing' && view.phase === 'playing' && !view.seats[was.owner]?.eliminatedAt) added.push({ at, kind: 'sell', text: `${name(was.owner)} sold ${spacesFor(view.theme)[space].name}` });
       else if (was.owner !== NO_OWNER && lot.owner !== NO_OWNER && was.owner !== lot.owner) moved.push({ space, from: was.owner, to: lot.owner });
-      if (lot.owner === was.owner && lot.buildings > was.buildings) added.push({ at, kind: 'build', text: `${name(lot.owner)} built on ${spacesFor(view.theme)[space].name} (${lot.buildings}/3)` });
+      if (lot.owner === was.owner && lot.buildings > was.buildings) added.push({ at, kind: 'build', text: `${name(lot.owner)} built ${lot.buildings === HOTEL ? 'a hotel' : `house ${lot.buildings}`} on ${spacesFor(view.theme)[space].name}` });
     });
     // A swap is two lots that changed hands in opposite directions; pairing them survives coalesced updates.
     for (const [i, x] of moved.entries()) {
@@ -232,7 +232,7 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
           {selected !== undefined && view.phase === 'playing' && <div className="pop"><PropertyCard view={view} space={selected} seat={seat} heading="Property" onClose={() => setSelected(undefined)}>
             {myTurn && view.board[selected].owner === seat && (view.stage === 'preroll' || view.stage === 'buydecision') && <div className="actions">
               {view.stage === 'preroll' && spacesFor(view.theme)[selected].kind === 'city' && <button className="btn" data-testid="card-build" disabled={busy || !canBuild(view, seat, selected)}
-                onClick={() => void run(() => property(table, 'build', selected))}>Build for {money(spacesFor(view.theme)[selected].buildingCost ?? 0)}</button>}
+                onClick={() => void run(() => property(table, 'build', selected))}>{view.board[selected].buildings === HOTEL ? 'Has a hotel' : `Build ${view.board[selected].buildings === HOTEL - 1 ? 'hotel' : 'house'} for ${money(spacesFor(view.theme)[selected].buildingCost ?? 0)}`}</button>}
               <button className="btn" data-testid="card-sell" disabled={busy} onClick={() => void run(async () => { await property(table, 'sell', selected); setSelected(undefined); })}>
                 Sell for {money(saleValue(view, selected))}</button>
             </div>}
@@ -426,6 +426,10 @@ function InviteSheet({ invite, onClose }: { invite: string; onClose: () => void 
 }
 
 /** A deed card: group, price, the rent ladder and who owns it. */
+/** A city takes up to four houses, then a hotel: the last building level. */
+const HOTEL = board.rules.maxBuildingsPerCity;
+const buildingLabel = (count: number) => count === HOTEL ? 'Hotel' : `${count} house${count > 1 ? 's' : ''}`;
+
 function PropertyCard({ view, space: index, seat, heading, onClose, children }: {
   view: TableView; space: number; seat: number; heading: string; onClose?: () => void; children?: ReactNode;
 }) {
@@ -439,15 +443,15 @@ function PropertyCard({ view, space: index, seat, heading, onClose, children }: 
     </section>
   );
   const ladder = space.kind === 'city'
-    ? [['Rent', space.rent!], ['Whole group', space.rent! * board.rules.groupRentMultiplier], ...board.rules.buildingRentMultipliers.map((m, i) => [`${i + 1} building${i ? 's' : ''}`, space.rent! * m] as [string, number])] as [string, number][]
+    ? [['Rent', space.rent!], ['Whole group', space.rent! * board.rules.groupRentMultiplier], ...board.rules.buildingRentMultipliers.map((m, i) => [buildingLabel(i + 1), space.rent! * m] as [string, number])] as [string, number][]
     : [1, 2, 3, 4].map(count => [`Owner has ${count}`, space.rent! * count] as [string, number]);
   const current = lot.owner === NO_OWNER ? -1 : rent(view, index);
   return (
     <section className="panel deed" data-testid="property-card" data-space={index}>
       <header style={{ background: color, color: space.group ? GROUP_INK[space.group] : '#FFFFFF' }}><small>{heading}</small><b>{space.name}</b>{onClose && <button className="close" onClick={onClose} aria-label="Close">×</button>}</header>
-      <p className="deed-line">{space.group === 'Public' ? 'Public property' : `${space.group} group`}, price {money(space.price ?? 0)}{space.buildingCost ? `, buildings ${money(space.buildingCost)}` : ''}</p>
+      <p className="deed-line">{space.group === 'Public' ? 'Public property' : `${space.group} group`}, price {money(space.price ?? 0)}{space.buildingCost ? `, houses and hotel ${money(space.buildingCost)} each` : ''}</p>
       <table><tbody>{ladder.map(([label, value]) => <tr key={label} className={value === current ? 'now' : ''}><td>{label}</td><td>{money(value)}</td></tr>)}</tbody></table>
-      <p className="deed-line">{lot.owner === NO_OWNER ? 'For sale' : `Owned by ${lot.owner === seat ? 'you' : view.seats[lot.owner].name}${lot.buildings ? `, ${lot.buildings} building${lot.buildings > 1 ? 's' : ''}` : ''}`}</p>
+      <p className="deed-line">{lot.owner === NO_OWNER ? 'For sale' : `Owned by ${lot.owner === seat ? 'you' : view.seats[lot.owner].name}${lot.buildings ? `, ${lot.buildings === HOTEL ? 'a hotel' : buildingLabel(lot.buildings)}` : ''}`}</p>
       {children}
     </section>
   );
@@ -462,7 +466,7 @@ function Holdings({ view, seat, buildNow, onSelect }: { view: TableView; seat: n
       <div className="chips">{owned.map(space => (
         <button key={space.index} className="chip" data-testid={`holding-${space.index}`}
           data-can-build={buildNow && canBuild(view, seat, space.index) ? 'yes' : 'no'} data-cost={space.buildingCost ?? 0} onClick={() => onSelect(space.index)} style={{ borderColor: GROUP_COLORS[space.group ?? 'Public'] }}>
-          {space.name}{view.board[space.index].buildings > 0 && <span className="chip-pips">{'▪'.repeat(view.board[space.index].buildings)}</span>}
+          {space.name}{view.board[space.index].buildings > 0 && <span className="chip-pips">{view.board[space.index].buildings === HOTEL ? 'Hotel' : '▪'.repeat(view.board[space.index].buildings)}</span>}
         </button>))}</div>
       <p className="quiet">Tap one to build or sell. Building needs the whole color group, on your turn before you roll.</p>
     </section>

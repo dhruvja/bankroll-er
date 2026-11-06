@@ -177,8 +177,9 @@ legend { font-weight: 800; font-stretch: 75%; text-transform: uppercase; margin-
 .cell.mark-offer { outline: 0.6cqi dashed var(--mark); outline-offset: -0.8cqi; }
 @keyframes pulse { 50% { box-shadow: inset 0 0 0 0.3cqi var(--yellow); } }
 .cell.built .cell-name { padding-right: 4.4cqi; }
-.pips { position: absolute; right: 0.8cqi; bottom: 0.9cqi; display: flex; gap: 0.4cqi; }
-.pips i { width: 1.1cqi; height: 2cqi; background: var(--ink); }
+.pips { position: absolute; right: 0.8cqi; bottom: 0.9cqi; display: flex; gap: 0.35cqi; }
+.pips i { width: 0.9cqi; height: 2cqi; background: var(--ink); }
+.pips i.hotel { width: 3cqi; height: 2.2cqi; background: var(--red); box-shadow: inset 0 0 0 0.35cqi var(--ink); }
 .token {
   position: absolute; z-index: 2; width: 4.6cqi; aspect-ratio: 1; border-radius: 50%;
   display: grid; place-items: center; font-weight: 900; font-size: 2.6cqi;

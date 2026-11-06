@@ -1497,7 +1497,7 @@
     {
       "code": 6020,
       "name": "CannotBuild",
-      "msg": "Build needs a city in a full group with fewer than 3 buildings"
+      "msg": "Build needs a city in a full group without a hotel yet"
     },
     {
       "code": 6021,
