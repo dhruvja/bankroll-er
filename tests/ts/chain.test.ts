@@ -21,7 +21,7 @@ const root = resolve(import.meta.dirname, '../..');
 test('the shared board is the frozen phase 01 economy and board.rs is generated from it', () => {
   assert.equal(createHash('sha256').update(readFileSync(resolve(root, 'shared/board.json'))).digest('hex'), BOARD_SHA256);
   assert.equal(readFileSync(BOARD_RS, 'utf8'), renderBoardRs(board));
-  assert.deepEqual([2, 3, 4].map(defaultTarget), [3000, 5000, 7000]);
+  assert.deepEqual([2, 3, 4].map(defaultTarget), [1800, 3500, 4500]);
 });
 
 function encodedTable(overrides: Record<string, unknown> = {}) {
@@ -182,7 +182,7 @@ test('rent, sale value and build checks mirror the program', async () => {
   view.board[2] = { owner: 1, buildings: 0 };
   assert.equal(rent(view, 1), 12, 'full group doubles');
   assert.equal(canBuild(view, 1, 1), true);
-  for (const [buildings, expected] of [[1, 24], [2, 42], [3, 66], [4, 96], [5, 132]]) {
+  for (const [buildings, expected] of [[1, 18], [2, 30], [3, 42], [4, 60], [5, 84]]) {
     view.board[1].buildings = buildings;
     assert.equal(rent(view, 1), expected);
   }
@@ -191,7 +191,7 @@ test('rent, sale value and build checks mirror the program', async () => {
   view.board[27] = { owner: 0, buildings: 3 };
   view.board[25] = { owner: 0, buildings: 0 };
   view.board[26] = { owner: 0, buildings: 0 };
-  assert.equal(rent(view, 27), 440);
+  assert.equal(rent(view, 27), 280);
   view.board[25].owner = NO_OWNER;
   assert.equal(rent(view, 27), 40, 'a broken group pays base rent');
   for (const [count, space] of [3, 10, 17, 24].entries()) {

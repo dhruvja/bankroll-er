@@ -184,7 +184,7 @@ pub enum VrfPurpose {
 pub enum GameError {
     #[msg("Entry must be 0.001, 1, or 5 devnet USDC")]
     InvalidEntry,
-    #[msg("Players must be 2-4, the target 3000, 5000 or 7000, and the theme 0-2")]
+    #[msg("Players must be 2-4, the target 1800, 3500 or 4500, and the theme 0-2")]
     InvalidConfig,
     #[msg("Name must contain 1 to 16 UTF-8 bytes")]
     InvalidName,

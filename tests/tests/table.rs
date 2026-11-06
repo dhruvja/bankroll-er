@@ -326,7 +326,7 @@ fn scoped_identity() -> Address {
 #[test]
 fn zero_sol_players_open_join_and_settle_the_exact_three_player_split() {
     let mut h = Harness::new();
-    h.open(3, 3000);
+    h.open(3, 1800);
     assert!(h.join(1, 0).is_err(), "stale invite nonce");
     h.join(1, 1).unwrap();
     h.join(2, 1).unwrap();
@@ -342,13 +342,13 @@ fn zero_sol_players_open_join_and_settle_the_exact_three_player_split() {
     table.stage = Stage::Rolling;
     table.vrf_purpose = VrfPurpose::Roll;
     table.order = [2, 0, 1, 3];
-    table.seats[2].cash = 2_850;
+    table.seats[2].cash = 1_650;
     table.seats[2].position = 27;
-    table.seats[0].cash = 2_100;
-    table.seats[1].cash = 2_000;
+    table.seats[0].cash = 1_500;
+    table.seats[1].cash = 1_400;
     h.write(&table);
     h.callback(scoped_identity(), die(1), table.vrf_nonce).unwrap();
-    assert_eq!(h.read().phase, TablePhase::Finished, "salary lifts seat 2 to the $3k target");
+    assert_eq!(h.read().phase, TablePhase::Finished, "salary lifts seat 2 to the $1.8k target");
 
     let settle = h.settle_ix();
     let result = h.send(&[], settle.clone()).unwrap();
@@ -370,7 +370,7 @@ fn zero_sol_players_open_join_and_settle_the_exact_three_player_split() {
 #[test]
 fn four_seat_settle_with_ties_fits_and_sweeps_dust_and_strays_to_the_treasury() {
     let mut h = Harness::new();
-    h.playing(4, 7000);
+    h.playing(4, 4500);
     let mut token = TokenAccount::unpack(&h.svm.get_account(&ata(h.table)).unwrap().data).unwrap();
     token.amount += 123;
     let mut data = vec![0; TokenAccount::LEN];
@@ -392,7 +392,7 @@ fn four_seat_settle_with_ties_fits_and_sweeps_dust_and_strays_to_the_treasury() 
 #[test]
 fn lobby_cancel_refunds_every_entry_exactly_once_and_frees_the_table() {
     let mut h = Harness::new();
-    h.open(4, 5000);
+    h.open(4, 3500);
     h.join(1, 1).unwrap();
     assert!(h.action(1, bankroll::instruction::CancelOrExpire {}).is_err(), "guest cannot cancel early");
     h.action(0, bankroll::instruction::CancelOrExpire {}).unwrap();
@@ -407,7 +407,7 @@ fn lobby_cancel_refunds_every_entry_exactly_once_and_frees_the_table() {
     assert_eq!(balance(&h.svm, h.treasury), 0);
     assert_eq!(h.read().phase, TablePhase::Free);
 
-    h.open(2, 3000);
+    h.open(2, 1800);
     h.clock(T0 + 600);
     h.action(1, bankroll::instruction::CancelOrExpire {}).unwrap();
     assert_eq!(h.read().phase, TablePhase::Refunding, "anyone may expire a stale lobby");
@@ -416,7 +416,7 @@ fn lobby_cancel_refunds_every_entry_exactly_once_and_frees_the_table() {
 #[test]
 fn substituted_custody_recipient_treasury_or_mint_cannot_take_funds() {
     let mut h = Harness::new();
-    h.playing(3, 3000);
+    h.playing(3, 1800);
     h.finish(&[3000, 2000, 1000]);
     let attacker = Keypair::new().pubkey();
     set_token(&mut h.svm, attacker, USDC_MINT, 0, false);
@@ -471,7 +471,7 @@ fn substituted_custody_recipient_treasury_or_mint_cannot_take_funds() {
 fn money_instructions_reject_base_clones_missing_records_and_foreign_custody() {
     for case in 0..5 {
         let mut h = Harness::new();
-        let mut open = h.enter(0, bankroll::instruction::OpenTable { name: "Host".into(), entry: USDC, max_players: 2, target: 3000, theme: 0 });
+        let mut open = h.enter(0, bankroll::instruction::OpenTable { name: "Host".into(), entry: USDC, max_players: 2, target: 1800, theme: 0 });
         match case {
             0 => h.svm.set_account(record(h.table), Account::default()).unwrap(),
             1 => {
@@ -502,7 +502,7 @@ fn money_instructions_reject_base_clones_missing_records_and_foreign_custody() {
 #[test]
 fn spoofed_or_stale_vrf_callbacks_are_rejected_and_the_genuine_one_drives_play() {
     let mut h = Harness::new();
-    h.playing(2, 7000);
+    h.playing(2, 4500);
     let roll = ix(
         bankroll::accounts::RequestRandomness {
             payer: h.wallet(0),
@@ -562,7 +562,7 @@ fn spoofed_or_stale_vrf_callbacks_are_rejected_and_the_genuine_one_drives_play()
 #[test]
 fn a_reused_table_carries_no_state_from_the_previous_game() {
     let mut h = Harness::new();
-    h.playing(3, 5000);
+    h.playing(3, 3500);
     let mut table = h.read();
     table.board[1].owner = 2;
     table.board[23].buildings = 2;
@@ -581,7 +581,7 @@ fn a_reused_table_carries_no_state_from_the_previous_game() {
         set_token(&mut h.svm, wallet, USDC_MINT, USDC, false);
     }
     h.clock(T0 + 50);
-    let open = h.enter(3, bankroll::instruction::OpenTable { name: "Next".into(), entry: USDC, max_players: 2, target: 3000, theme: 0 });
+    let open = h.enter(3, bankroll::instruction::OpenTable { name: "Next".into(), entry: USDC, max_players: 2, target: 1800, theme: 0 });
     let host = h.players[3].insecure_clone();
     h.send(&[&host], open).unwrap();
     let table = h.read();
@@ -594,7 +594,7 @@ fn a_reused_table_carries_no_state_from_the_previous_game() {
         host: h.wallet(3),
         entry: USDC,
         max_players: 2,
-        target: 3000,
+        target: 1800,
         player_count: 1,
         lobby_deadline: T0 + 50 + 600,
         last_action_at: T0 + 50,
@@ -613,7 +613,7 @@ fn a_reused_table_carries_no_state_from_the_previous_game() {
 #[test]
 fn emergency_refund_pays_ranked_shares_when_settle_keeps_failing() {
     let mut h = Harness::new();
-    h.playing(3, 3000);
+    h.playing(3, 1800);
     h.finish(&[3500, 2000, 1000]);
     set_token(&mut h.svm, h.treasury, USDC_MINT, 0, true);
     let settle = h.settle_ix();
@@ -648,7 +648,7 @@ fn emergency_refund_pays_ranked_shares_when_settle_keeps_failing() {
 #[test]
 fn a_losing_seat_cannot_block_settle_by_closing_its_token_accounts() {
     let mut h = Harness::new();
-    h.playing(2, 3000);
+    h.playing(2, 1800);
     h.finish(&[3500, 1000]);
     let loser = h.wallet(1);
     close(&mut h.svm, ata(loser));
@@ -678,7 +678,7 @@ fn die_and_card(value: u8, card: u8) -> [u8; 32] {
 #[test]
 fn a_late_callback_after_a_vrf_re_request_fails_and_a_jailed_roll_skips_the_oracle() {
     let mut h = Harness::new();
-    h.playing(2, 7000);
+    h.playing(2, 4500);
     let result = h.roll(0).unwrap();
     eprintln!("roll request CU {}", result.compute_units_consumed);
     let first = h.read();
@@ -716,8 +716,8 @@ fn a_late_callback_after_a_vrf_re_request_fails_and_a_jailed_roll_skips_the_orac
 #[test]
 fn bankruptcy_and_forfeit_rank_through_settle() {
     let mut h = Harness::new();
-    h.playing(4, 7000);
-    // Seat 0 lands on seat 1's full-Gold Tokyo with 3 buildings ($385) holding $100: bankrupt.
+    h.playing(4, 4500);
+    // Seat 0 lands on seat 1's full-Gold Tokyo with 3 buildings ($245) holding $100: bankrupt.
     let mut table = h.read();
     table.board[25] = bankroll::Lot { owner: 1, buildings: 3 };
     table.board[26].owner = 1;
@@ -731,7 +731,7 @@ fn bankruptcy_and_forfeit_rank_through_settle() {
     h.callback(scoped_identity(), die(3), h.read().vrf_nonce).unwrap();
     let table = h.read();
     assert_eq!((table.seats[0].eliminated_at, table.board[1].owner, table.turn), (1, NO_OWNER, 1));
-    assert_eq!(table.seats[1].cash, 2000 + 385);
+    assert_eq!(table.seats[1].cash, 2000 + 245);
 
     // Seats 1 and 2 time out once; seat 3's third strike forfeits it.
     for _ in 0..3 {
@@ -761,12 +761,12 @@ fn bankruptcy_and_forfeit_rank_through_settle() {
 fn the_worst_case_roll_callback_fits_the_vrf_callback_budget() {
     // A 6 lands on Lucky Card (21) and every card is drawn in turn. The move cards add the heaviest
     // landing: card 10 moves seat 0 onto seat 1's Power Plant (all four publics, $100) and card 11
-    // onto seat 1's Paris in a full Green group with 3 buildings ($286). Either rent takes seat 0
+    // onto seat 1's Paris in a full Green group with 3 buildings ($182). Either rent takes seat 0
     // below -$500 and releases seven holdings. Three seats remain, so every end condition is evaluated.
     let mut worst = 0;
     for card in 1..=12u8 {
         let mut h = Harness::new();
-        h.playing(4, 7000);
+        h.playing(4, 4500);
         let mut table = h.read();
         for space in [18usize, 19, 20] {
             table.board[space] = bankroll::Lot { owner: 1, buildings: 3 };
@@ -790,7 +790,7 @@ fn the_worst_case_roll_callback_fits_the_vrf_callback_budget() {
         eprintln!("card {card}: consume_randomness CU {}", result.compute_units_consumed);
         if let Some((space, rent)) = match card {
             10 => Some((24, 100)),
-            11 => Some((18, 286)),
+            11 => Some((18, 182)),
             _ => None,
         } {
             assert_eq!((after.seats[0].position, after.seats[0].eliminated_at), (space, 1), "bankrupt on card {card} rent");
@@ -807,7 +807,7 @@ fn the_worst_case_roll_callback_fits_the_vrf_callback_budget() {
 #[test]
 fn an_accepted_trade_swaps_with_the_chosen_seat_and_only_the_lander_or_active_seats_act() {
     let mut h = Harness::new();
-    h.playing(4, 7000);
+    h.playing(4, 4500);
     // Seat 0 holds Seoul; seat 1 Lisbon; seat 2 Berlin; seat 3 was eliminated (its holdings released).
     let mut table = h.read();
     for (space, owner) in [(11usize, 0u8), (1, 1), (12, 2)] {
@@ -875,7 +875,7 @@ fn withdraw_fees_is_admin_only_capped_at_the_treasury_and_er_only() {
 #[test]
 fn a_closed_refund_account_cannot_keep_the_table_out_of_the_pool() {
     let mut h = Harness::new();
-    h.open(3, 3000);
+    h.open(3, 1800);
     h.join(1, 1).unwrap();
     h.join(2, 1).unwrap();
     h.action(0, bankroll::instruction::CancelOrExpire {}).unwrap();
@@ -907,7 +907,7 @@ fn a_closed_refund_account_cannot_keep_the_table_out_of_the_pool() {
 #[test]
 fn settle_pays_the_live_seats_and_holds_an_undelegated_seats_share() {
     let mut h = Harness::new();
-    h.playing(3, 3000);
+    h.playing(3, 1800);
     h.finish(&[3500, 2000, 1000]);
     let second = h.wallet(1);
     close(&mut h.svm, custody_record(second));
@@ -933,7 +933,7 @@ fn settle_pays_the_live_seats_and_holds_an_undelegated_seats_share() {
 #[test]
 fn a_fresh_client_ends_ranks_and_settles_an_abandoned_game_in_one_transaction() {
     let mut h = Harness::new();
-    h.playing(3, 7000);
+    h.playing(3, 4500);
     let mut table = h.read();
     table.seats[0].cash = 1_500;
     table.seats[1].cash = 2_400;

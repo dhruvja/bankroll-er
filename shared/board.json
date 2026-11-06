@@ -281,11 +281,11 @@
     24
   ],
   "rules": {
-    "startCash": 2000,
+    "startCash": 1000,
     "seatBonusStepByTarget": {
-      "3000": 75,
-      "5000": 125,
-      "7000": 175
+      "1800": 40,
+      "3500": 40,
+      "4500": 40
     },
     "salary": 200,
     "jailSpace": 7,
@@ -298,21 +298,21 @@
     "maxRollsPerTurn": 3,
     "groupRentMultiplier": 2,
     "buildingRentMultipliers": [
-      4,
+      3,
+      5,
       7,
-      11,
-      16,
-      22
+      10,
+      14
     ],
     "targets": [
-      3000,
-      5000,
-      7000
+      1800,
+      3500,
+      4500
     ],
     "defaultTargetByPlayers": {
-      "2": 3000,
-      "3": 5000,
-      "4": 7000
+      "2": 1800,
+      "3": 3500,
+      "4": 4500
     },
     "cardMoveOntoLuckyDrawsAgain": false,
     "deadlinesSec": {
@@ -331,32 +331,32 @@
     {
       "id": 1,
       "kind": "bank",
-      "amount": 300,
-      "text": "Collect $300 from the bank."
+      "amount": 150,
+      "text": "Collect $150 from the bank."
     },
     {
       "id": 2,
+      "kind": "bank",
+      "amount": 100,
+      "text": "Collect $100."
+    },
+    {
+      "id": 3,
       "kind": "bank",
       "amount": 200,
       "text": "Collect $200."
     },
     {
-      "id": 3,
-      "kind": "bank",
-      "amount": 400,
-      "text": "Collect $400."
-    },
-    {
       "id": 4,
       "kind": "bank",
-      "amount": -100,
-      "text": "Pay $100 to the bank."
+      "amount": -50,
+      "text": "Pay $50 to the bank."
     },
     {
       "id": 5,
       "kind": "bank",
-      "amount": -50,
-      "text": "Pay $50 to the bank."
+      "amount": -25,
+      "text": "Pay $25 to the bank."
     },
     {
       "id": 6,

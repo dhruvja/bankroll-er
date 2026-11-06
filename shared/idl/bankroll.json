@@ -1451,7 +1451,7 @@
     {
       "code": 6001,
       "name": "InvalidConfig",
-      "msg": "Players must be 2-4, the target 3000, 5000 or 7000, and the theme 0-2"
+      "msg": "Players must be 2-4, the target 1800, 3500 or 4500, and the theme 0-2"
     },
     {
       "code": 6002,

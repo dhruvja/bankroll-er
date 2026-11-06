@@ -49,15 +49,15 @@ fn roll(table: &mut Table, value: u8, now: i64) {
 fn lobby_validates_config_nonce_capacity_and_refunds_free_the_table() {
     let w = wallets();
     let mut free = Table::default();
-    assert!(free.open(w[0], name("h"), 2 * USDC, 3, 3000, 0, T0).is_err());
-    assert!(free.open(w[0], name("h"), USDC, 5, 3000, 0, T0).is_err());
-    assert!(free.open(w[0], name("h"), USDC, 1, 3000, 0, T0).is_err());
+    assert!(free.open(w[0], name("h"), 2 * USDC, 3, 1800, 0, T0).is_err());
+    assert!(free.open(w[0], name("h"), USDC, 5, 1800, 0, T0).is_err());
+    assert!(free.open(w[0], name("h"), USDC, 1, 1800, 0, T0).is_err());
     assert!(free.open(w[0], name("h"), USDC, 3, 4000, 0, T0).is_err());
-    assert!(free.open(w[0], name("h"), USDC, 3, 3000, BOARD_THEMES, T0).is_err(), "unknown board theme");
+    assert!(free.open(w[0], name("h"), USDC, 3, 1800, BOARD_THEMES, T0).is_err(), "unknown board theme");
     assert!(encode_name("  ").is_err());
     assert!(encode_name("seventeen bytes!!").is_err());
-    free.open(w[0], name("h"), USDC, 2, 3000, 0, T0).unwrap();
-    assert!(free.open(w[1], name("x"), USDC, 2, 3000, 0, T0).is_err());
+    free.open(w[0], name("h"), USDC, 2, 1800, 0, T0).unwrap();
+    assert!(free.open(w[1], name("x"), USDC, 2, 1800, 0, T0).is_err());
     assert!(free.join(w[0], name("dup"), 1, T0).is_err());
     assert!(free.join(w[1], name("stale"), 0, T0).is_err());
     assert!(free.start(w[0], T0).is_err(), "one player cannot start");
@@ -74,7 +74,7 @@ fn lobby_validates_config_nonce_capacity_and_refunds_free_the_table() {
     assert_eq!(free.refund(0).unwrap(), (w[0], free.entry));
     assert_eq!(free.phase, TablePhase::Free);
 
-    let mut expired = lobby(2, 3000);
+    let mut expired = lobby(2, 1800);
     assert!(expired.join(w[2], name("late"), 1, T0 + LOBBY_SECONDS).is_err());
     assert!(expired.start(w[0], T0 + LOBBY_SECONDS).is_err());
     expired.cancel_or_expire(w[0], T0 + 1).unwrap();
@@ -82,7 +82,7 @@ fn lobby_validates_config_nonce_capacity_and_refunds_free_the_table() {
 
 #[test]
 fn turn_order_is_a_permutation_with_the_seat_bonus_for_each_target() {
-    for (target, step) in [(3000, 75), (5000, 125), (7000, 175)] {
+    for (target, step) in [(1800, 40), (3500, 40), (4500, 40)] {
         for seed in 0..8u8 {
             let mut table = lobby(4, target);
             assert!(table.start(wallets()[1], T0).is_err(), "only the host starts");
@@ -93,7 +93,7 @@ fn turn_order_is_a_permutation_with_the_seat_bonus_for_each_target() {
             sorted.sort();
             assert_eq!(sorted, [0, 1, 2, 3]);
             for (place, seat) in table.order.iter().enumerate() {
-                assert_eq!(table.seats[*seat as usize].cash, 2000 + step * place as i64);
+                assert_eq!(table.seats[*seat as usize].cash, 1000 + step * place as i64);
             }
             assert_eq!((table.stage, table.turn, table.round), (Stage::PreRoll, 0, 1));
             assert_eq!(table.stage_deadline, T0 + 1 + PREROLL_SECONDS);
@@ -104,7 +104,7 @@ fn turn_order_is_a_permutation_with_the_seat_bonus_for_each_target() {
 
 #[test]
 fn movement_salary_buy_and_pass() {
-    let mut table = playing(3, 7000);
+    let mut table = playing(3, 4500);
     table.seats[0].position = 24;
     let cash = table.seats[0].cash;
     roll(&mut table, 4, T0 + 2);
@@ -140,14 +140,14 @@ fn movement_salary_buy_and_pass() {
 
 #[test]
 fn rent_is_base_doubled_for_a_full_group_and_scaled_for_publics() {
-    let mut table = playing(2, 7000);
+    let mut table = playing(2, 4500);
     table.board[1].owner = 1;
     assert_eq!(table.rent(1), 6);
     table.board[2].owner = 1;
     assert_eq!(table.rent(1), 12);
     assert_eq!(table.rent(2), 16);
     table.board[1].buildings = 3;
-    assert_eq!(table.rent(1), 66, "building multipliers apply with the full group");
+    assert_eq!(table.rent(1), 42, "building multipliers apply with the full group");
     table.board[2].owner = NO_OWNER;
     assert_eq!(table.rent(1), 6, "a broken group falls back to base rent");
     table.board[1].buildings = 0;
@@ -174,7 +174,7 @@ fn rent_is_base_doubled_for_a_full_group_and_scaled_for_publics() {
 
 #[test]
 fn a_six_grants_another_roll_up_to_three_per_turn() {
-    let mut table = playing(2, 7000);
+    let mut table = playing(2, 4500);
     // Each roll starts on Madrid (8) and lands on Auction (14), a no-op while nobody owns anything.
     table.seats[0].position = 8;
     roll(&mut table, 6, T0 + 1);
@@ -197,7 +197,7 @@ fn a_six_grants_another_roll_up_to_three_per_turn() {
 
 #[test]
 fn stage_timeouts_strike_skip_and_forfeit_on_the_third_strike() {
-    let mut table = playing(3, 7000);
+    let mut table = playing(3, 4500);
     let deadline = table.stage_deadline;
     assert!(table.force_timeout(deadline - 1).is_err());
     table.force_timeout(deadline).unwrap();
@@ -227,7 +227,7 @@ fn stage_timeouts_strike_skip_and_forfeit_on_the_third_strike() {
 
 #[test]
 fn forfeit_releases_properties_and_strikes_never_reset() {
-    let mut table = playing(3, 7000);
+    let mut table = playing(3, 4500);
     table.board[1].owner = 0;
     table.seats[0].strikes = 2;
     roll(&mut table, 1, T0 + 1);
@@ -245,17 +245,17 @@ fn forfeit_releases_properties_and_strikes_never_reset() {
 
 #[test]
 fn reaching_the_target_ends_the_game() {
-    let mut table = playing(3, 3000);
-    table.seats[0].cash = 2_850;
+    let mut table = playing(3, 1800);
+    table.seats[0].cash = 1_650;
     table.seats[0].position = 23;
     roll(&mut table, 1, T0 + 1);
-    assert_eq!(table.phase, TablePhase::Playing, "net worth 2850 + Power Plant would need a buy");
+    assert_eq!(table.phase, TablePhase::Playing, "net worth 1650 + Power Plant would need a buy");
     table.buy(wallets()[0], T0 + 2).unwrap();
     assert_eq!(table.phase, TablePhase::Playing, "buying keeps net worth");
     table.seats[1].position = 27;
-    table.seats[1].cash = 2_800;
+    table.seats[1].cash = 1_600;
     roll(&mut table, 1, T0 + 3);
-    assert_eq!(table.phase, TablePhase::Finished, "salary lifts seat 1 to 3000");
+    assert_eq!(table.phase, TablePhase::Finished, "salary lifts seat 1 to 1800");
     assert_eq!((table.stage, table.ended_at, table.vrf_purpose), (Stage::Idle, T0 + 3, VrfPurpose::None));
     assert!(table.roll(wallets()[2], T0 + 4).is_err());
     assert!(table.force_timeout(T0 + 5).is_err());
@@ -263,7 +263,7 @@ fn reaching_the_target_ends_the_game() {
 
 #[test]
 fn rent_that_bankrupts_eliminates_the_payer() {
-    let mut table = playing(2, 7000);
+    let mut table = playing(2, 4500);
     for space in [25, 26, 27] {
         table.board[space] = Lot { owner: 1, buildings: 3 };
     }
@@ -271,15 +271,15 @@ fn rent_that_bankrupts_eliminates_the_payer() {
     table.seats[0].position = 26;
     let owner = table.seats[1].cash;
     roll(&mut table, 1, T0 + 1);
-    assert_eq!(table.seats[0].eliminated_at, 1, "-50 - 440 leaves net worth below zero");
-    assert_eq!(table.seats[1].cash, owner + 440, "New York, full Gold, 3 buildings: 40 x 11");
+    assert_eq!(table.seats[0].eliminated_at, 1, "-50 - 280 leaves net worth below zero");
+    assert_eq!(table.seats[1].cash, owner + 280, "New York, full Gold, 3 buildings: 40 x 7");
     assert_eq!(table.phase, TablePhase::Finished);
     assert_eq!(table.payouts().unwrap(), [0, 1_940_000, 0, 0]);
 }
 
 #[test]
 fn idle_deadline_ends_by_ranking_before_stage_timeouts_then_emergency_refund() {
-    let mut table = playing(3, 7000);
+    let mut table = playing(3, 4500);
     table.seats[2].cash += 500;
     let idle = table.last_action_at + IDLE_SECONDS;
     table.force_timeout(idle).unwrap();
@@ -309,7 +309,7 @@ fn idle_deadline_ends_by_ranking_before_stage_timeouts_then_emergency_refund() {
     assert_eq!(table.phase, TablePhase::Free);
 
     // A table nobody touched until long after the idle deadline still ends by ranking.
-    let mut stuck = playing(2, 3000);
+    let mut stuck = playing(2, 1800);
     stuck.roll(wallets()[0], T0 + 11).unwrap();
     assert_eq!(stuck.stage, Stage::Rolling);
     let late = T0 + 11 + IDLE_SECONDS + EMERGENCY_SECONDS;
@@ -320,7 +320,7 @@ fn idle_deadline_ends_by_ranking_before_stage_timeouts_then_emergency_refund() {
     stuck.force_timeout(late + EMERGENCY_SECONDS).unwrap();
     assert_eq!(stuck.phase, TablePhase::Refunding);
 
-    let mut unordered = lobby(2, 3000);
+    let mut unordered = lobby(2, 1800);
     unordered.start(wallets()[0], T0).unwrap();
     unordered.force_timeout(T0 + IDLE_SECONDS).unwrap();
     assert_eq!(unordered.phase, TablePhase::Refunding, "no turn order: refund instead of ranking");
@@ -331,7 +331,7 @@ fn idle_deadline_ends_by_ranking_before_stage_timeouts_then_emergency_refund() {
 #[test]
 fn after_the_idle_deadline_no_player_action_revives_the_game_and_one_timeout_ranks_it() {
     let w = wallets();
-    let mut table = playing(3, 7000);
+    let mut table = playing(3, 4500);
     for (seat, cash) in [2000, 2900, 2000].into_iter().enumerate() {
         table.seats[seat].cash = cash;
     }
@@ -376,14 +376,14 @@ fn after_the_idle_deadline_no_player_action_revives_the_game_and_one_timeout_ran
     assert_eq!(table.payouts().unwrap(), [0, 2_010_000, 900_000, 0]);
 
     // The same holds in Rolling (a re-request would bump the idle clock) and in Ordering.
-    let mut rolling = playing(2, 3000);
+    let mut rolling = playing(2, 1800);
     rolling.roll(w[0], T0).unwrap();
     let idle = rolling.last_action_at + IDLE_SECONDS;
     assert!(rolling.roll(w[0], idle).is_err() && rolling.roll(w[1], idle).is_err());
-    let mut ordering = lobby(2, 3000);
+    let mut ordering = lobby(2, 1800);
     ordering.start(w[0], T0).unwrap();
     assert!(ordering.start(w[1], T0 + IDLE_SECONDS).is_err());
-    let mut offers = auction(3, 7000, 8, 6, &[(1, 0), (2, 1)]);
+    let mut offers = auction(3, 4500, 8, 6, &[(1, 0), (2, 1)]);
     offers.open_trade(w[0], 1, T0).unwrap();
     assert!(offers.offer_trade(w[1], 2, T0 + IDLE_SECONDS).is_err());
 }
@@ -391,7 +391,7 @@ fn after_the_idle_deadline_no_player_action_revives_the_game_and_one_timeout_ran
 /// Stage timeouts spammed at one instant strike once; every repeat is rejected without change.
 #[test]
 fn force_timeout_spam_is_idempotent() {
-    let mut table = playing(3, 7000);
+    let mut table = playing(3, 4500);
     let deadline = table.stage_deadline;
     for _ in 0..20 {
         assert!(table.force_timeout(deadline - 1).is_err());
@@ -407,7 +407,7 @@ fn force_timeout_spam_is_idempotent() {
 
 #[test]
 fn vrf_callbacks_need_the_pending_nonce_and_retries_bump_it() {
-    let mut table = lobby(2, 3000);
+    let mut table = lobby(2, 1800);
     assert!(table.consume_randomness([1; 32], table.vrf_nonce, T0).is_err(), "nothing pending");
     table.start(wallets()[0], T0).unwrap();
     let first = table.vrf_nonce;
@@ -440,7 +440,7 @@ fn vrf_callbacks_need_the_pending_nonce_and_retries_bump_it() {
 /// deadline still runs from the last real action and then ends the game by ranking.
 #[test]
 fn vrf_re_requests_do_not_move_the_idle_deadline() {
-    let mut table = lobby(3, 7000);
+    let mut table = lobby(3, 4500);
     table.start(wallets()[0], T0).unwrap();
     table.start(wallets()[1], T0 + VRF_RETRY_SECONDS).unwrap();
     assert_eq!(table.last_action_at, T0, "an order re-request is not an action");
@@ -464,7 +464,7 @@ fn vrf_re_requests_do_not_move_the_idle_deadline() {
 /// waits in Refunding for that seat alone, which then pulls its ranked share.
 #[test]
 fn settlement_with_an_unpaid_seat_waits_in_refunding_for_that_seat_only() {
-    let mut table = playing(3, 7000);
+    let mut table = playing(3, 4500);
     table
         .force_timeout(table.last_action_at + IDLE_SECONDS)
         .unwrap();
@@ -489,7 +489,7 @@ fn settlement_with_an_unpaid_seat_waits_in_refunding_for_that_seat_only() {
 
 #[test]
 fn open_resets_every_game_field_but_keeps_identity_and_nonces() {
-    let mut table = playing(4, 5000);
+    let mut table = playing(4, 3500);
     roll(&mut table, 1, T0 + 1);
     table.buy(wallets()[0], T0 + 2).unwrap();
     table.seats[3].strikes = 2;
@@ -499,7 +499,7 @@ fn open_resets_every_game_field_but_keeps_identity_and_nonces() {
     assert_eq!(table.phase, TablePhase::Free);
     let (game_nonce, vrf_nonce) = (table.game_nonce, table.vrf_nonce);
     let host = Pubkey::new_unique();
-    table.open(host, name("next"), 5 * USDC, 2, 3000, 0, T0 + 9_000).unwrap();
+    table.open(host, name("next"), 5 * USDC, 2, 1800, 0, T0 + 9_000).unwrap();
     let mut fresh = Table {
         index: 3,
         bump: 250,
@@ -509,7 +509,7 @@ fn open_resets_every_game_field_but_keeps_identity_and_nonces() {
         host,
         entry: 5 * USDC,
         max_players: 2,
-        target: 3000,
+        target: 1800,
         player_count: 1,
         lobby_deadline: T0 + 9_000 + LOBBY_SECONDS,
         last_action_at: T0 + 9_000,
@@ -521,7 +521,7 @@ fn open_resets_every_game_field_but_keeps_identity_and_nonces() {
 }
 
 fn finished(nets: &[i64], eliminated: &[u8]) -> Table {
-    let mut table = playing(nets.len(), 7000);
+    let mut table = playing(nets.len(), 4500);
     for (seat, (&net, &out)) in nets.iter().zip(eliminated).enumerate() {
         table.seats[seat].cash = net;
         table.seats[seat].eliminated_at = out;
@@ -568,14 +568,14 @@ fn ranked_payouts_cover_every_order_and_tie_for_two_three_and_four_seats() {
         let paid: u64 = payouts.iter().sum();
         assert!(paid <= pot - pot * FEE_BPS / 10_000, "fee always reaches the treasury");
     }
-    assert!(playing(2, 3000).payouts().is_err(), "only a finished game pays out");
+    assert!(playing(2, 1800).payouts().is_err(), "only a finished game pays out");
 }
 
 #[test]
 fn a_tenth_of_a_cent_entry_opens_and_pays_out_without_losing_the_fee() {
     let w = wallets();
     let mut free = Table::default();
-    free.open(w[0], name("h"), ENTRIES[0], 2, 3000, 0, T0).unwrap();
+    free.open(w[0], name("h"), ENTRIES[0], 2, 1800, 0, T0).unwrap();
     assert_eq!(free.entry, 1_000);
     for (nets, eliminated, expected) in [
         (&[3000i64, 2000][..], &[0u8, 0][..], [1_940, 0, 0, 0]),
@@ -622,7 +622,7 @@ fn die_and_card(value: u8, card: u8) -> [u8; 32] {
 
 /// Seat 0 rolls `value` from `from` with every seat's cash set to `cash`, drawing `card`.
 fn draw_from(players: usize, from: u8, value: u8, card: u8, cash: i64) -> Table {
-    let mut table = playing(players, 7000);
+    let mut table = playing(players, 4500);
     for seat in &mut table.seats[..players] {
         seat.cash = cash;
     }
@@ -634,21 +634,21 @@ fn draw_from(players: usize, from: u8, value: u8, card: u8, cash: i64) -> Table 
 
 #[test]
 fn lucky_bank_cards_collect_or_pay() {
-    for (card, delta) in [(1u8, 300i64), (2, 200), (3, 400), (4, -100), (5, -50)] {
+    for (card, delta) in [(1u8, 150i64), (2, 100), (3, 200), (4, -50), (5, -25)] {
         let table = draw_from(3, 18, 3, card, 1000);
         assert_eq!(table.last_card, card);
         assert_eq!(table.seats[0].position, 21);
         assert_eq!(table.seats[0].cash, 1000 + delta, "card {card}");
         assert_eq!((table.turn, table.stage), (1, Stage::PreRoll));
     }
-    let table = draw_from(2, 18, 3, 4, 90);
+    let table = draw_from(2, 18, 3, 4, 40);
     assert_eq!(table.seats[0].eliminated_at, 1, "paying the bank into net worth <= 0 bankrupts");
     assert_eq!(table.phase, TablePhase::Finished);
 }
 
 #[test]
 fn lucky_card_6_pays_each_other_active_player() {
-    let mut table = playing(3, 7000);
+    let mut table = playing(3, 4500);
     for seat in &mut table.seats[..3] {
         seat.cash = 1000;
     }
@@ -671,7 +671,7 @@ fn lucky_card_7_collects_from_each_and_shares_one_elimination_mark() {
     assert_eq!(table.seats[..4].iter().map(|seat| seat.cash).collect::<Vec<_>>(), [1075, 975, 975, 975]);
 
     // Two payers already at -490 with land holdings drop below -500 in the same callback.
-    let mut table = playing(3, 7000);
+    let mut table = playing(3, 4500);
     table.seats[0].cash = 1000;
     for seat in [1usize, 2] {
         table.seats[seat].cash = -490;
@@ -714,7 +714,7 @@ fn lucky_move_cards_resolve_the_destination_and_never_draw_again() {
     assert_eq!((table.board[24].owner, table.seats[0].cash), (0, 800));
     assert_eq!((table.turn, table.stage), (0, Stage::PreRoll), "the 6 still grants its extra roll");
     // Card 10 from 21 onto an owned Power Plant pays rent.
-    let mut table = playing(2, 7000);
+    let mut table = playing(2, 4500);
     table.board[24].owner = 1;
     table.seats[0].position = 15;
     let (payer, owner) = (table.seats[0].cash, table.seats[1].cash);
@@ -726,7 +726,7 @@ fn lucky_move_cards_resolve_the_destination_and_never_draw_again() {
     let table = draw_from(2, 18, 3, 11, 1000);
     assert_eq!((table.seats[0].position, table.last_card, table.seats[0].cash, table.stage), (18, 11, 1000, Stage::BuyDecision));
     // Card 11 onto an owned Paris pays rent.
-    let mut table = playing(2, 7000);
+    let mut table = playing(2, 4500);
     table.board[18].owner = 1;
     table.seats[0].position = 18;
     let (payer, owner) = (table.seats[0].cash, table.seats[1].cash);
@@ -737,7 +737,7 @@ fn lucky_move_cards_resolve_the_destination_and_never_draw_again() {
 
 #[test]
 fn lucky_card_12_charges_repairs_per_building() {
-    let mut table = playing(2, 7000);
+    let mut table = playing(2, 4500);
     table.seats[0].cash = 1000;
     for space in [1usize, 2] {
         table.board[space] = Lot { owner: 0, buildings: 2 };
@@ -751,7 +751,7 @@ fn lucky_card_12_charges_repairs_per_building() {
 
 #[test]
 fn jail_by_roll_serves_three_turns_without_randomness() {
-    let mut table = playing(2, 7000);
+    let mut table = playing(2, 4500);
     table.seats[0].position = 1;
     roll(&mut table, 6, T0 + 1);
     assert_eq!((table.seats[0].position, table.seats[0].jail_turns), (7, 3));
@@ -772,7 +772,7 @@ fn jail_by_roll_serves_three_turns_without_randomness() {
 
 #[test]
 fn bail_releases_a_jailed_seat_and_ends_the_turn_without_moving() {
-    let mut table = playing(2, 7000);
+    let mut table = playing(2, 4500);
     table.seats[0].jail_turns = 3;
     table.seats[0].position = 7;
     table.seats[0].cash = 149;
@@ -786,7 +786,7 @@ fn bail_releases_a_jailed_seat_and_ends_the_turn_without_moving() {
     assert_eq!((table.turn, table.last_action_at), (1, T0 + 1));
     assert!(table.pay_bail(wallets()[1], T0 + 2).is_err(), "seat 1 is not jailed");
 
-    let mut broke = playing(2, 7000);
+    let mut broke = playing(2, 4500);
     broke.seats[0].jail_turns = 2;
     broke.seats[0].cash = 150;
     broke.pay_bail(wallets()[0], T0 + 1).unwrap();
@@ -796,7 +796,7 @@ fn bail_releases_a_jailed_seat_and_ends_the_turn_without_moving() {
 
 #[test]
 fn a_jailed_timeout_serves_the_turn_and_jailed_seats_still_collect_rent() {
-    let mut table = playing(2, 7000);
+    let mut table = playing(2, 4500);
     table.seats[0].jail_turns = 3;
     table.board[1].owner = 0;
     table.force_timeout(table.stage_deadline).unwrap();
@@ -808,7 +808,7 @@ fn a_jailed_timeout_serves_the_turn_and_jailed_seats_still_collect_rent() {
 
 #[test]
 fn buildings_need_the_full_group_cap_at_a_hotel_and_scale_rent() {
-    let mut table = playing(2, 7000);
+    let mut table = playing(2, 4500);
     table.seats[0].cash = 1000;
     table.board[1].owner = 0;
     assert!(table.build(wallets()[0], 1, T0 + 1).is_err(), "Athens is not owned yet");
@@ -819,7 +819,7 @@ fn buildings_need_the_full_group_cap_at_a_hotel_and_scale_rent() {
     assert!(table.build(wallets()[0], 30, T0 + 1).is_err(), "no such space");
     assert!(table.build(wallets()[1], 1, T0 + 1).is_err(), "not seat 1's turn");
     let worth = table.net_worth(0);
-    for (built, rent) in [(1u8, 24i64), (2, 42), (3, 66), (4, 96), (5, 132)] {
+    for (built, rent) in [(1u8, 18i64), (2, 30), (3, 42), (4, 60), (5, 84)] {
         table.build(wallets()[0], 1, T0 + 1).unwrap();
         assert_eq!((table.board[1].buildings, table.rent(1)), (built, rent));
     }
@@ -833,7 +833,7 @@ fn buildings_need_the_full_group_cap_at_a_hotel_and_scale_rent() {
     table.board[27] = Lot { owner: 1, buildings: 3 };
     table.board[25].owner = 1;
     table.board[26].owner = 1;
-    assert_eq!(table.rent(27), 440, "New York, full Gold, 3 buildings: 40 x 11");
+    assert_eq!(table.rent(27), 280, "New York, full Gold, 3 buildings: 40 x 7");
     table.board[25].owner = NO_OWNER;
     assert_eq!(table.rent(27), 40, "a broken group keeps its buildings but pays base rent");
     assert!(table.build(wallets()[0], 5, T0 + 1).is_err());
@@ -846,7 +846,7 @@ fn buildings_need_the_full_group_cap_at_a_hotel_and_scale_rent() {
 
 #[test]
 fn selling_pays_80_percent_in_preroll_or_buy_decision_only() {
-    let mut table = playing(2, 7000);
+    let mut table = playing(2, 4500);
     table.seats[0].cash = 1000;
     table.board[1] = Lot { owner: 0, buildings: 2 };
     table.board[2] = Lot { owner: 0, buildings: 1 };
@@ -874,7 +874,7 @@ fn selling_pays_80_percent_in_preroll_or_buy_decision_only() {
 
 #[test]
 fn a_sale_that_bankrupts_ends_the_turn() {
-    let mut table = playing(3, 7000);
+    let mut table = playing(3, 4500);
     table.seats[0].cash = -50;
     table.board[1].owner = 0;
     assert_eq!(table.net_worth(0), 10);
@@ -885,7 +885,7 @@ fn a_sale_that_bankrupts_ends_the_turn() {
 
 #[test]
 fn negative_cash_blocks_buying_building_and_bail_but_not_selling_or_rolling() {
-    let mut table = playing(2, 7000);
+    let mut table = playing(2, 4500);
     table.seats[0].cash = -10;
     table.board[1].owner = 0;
     table.board[2].owner = 0;
@@ -907,7 +907,7 @@ fn negative_cash_blocks_buying_building_and_bail_but_not_selling_or_rolling() {
 fn both_bankruptcy_triggers_eliminate_and_free_holdings() {
     // Gold full group: Tokyo rent 70 unbuilt, 140 with one building.
     let setup = |cash: i64, tokyo_buildings: u8, holdings: bool| {
-        let mut table = playing(3, 7000);
+        let mut table = playing(3, 4500);
         table.board[25] = Lot { owner: 1, buildings: tokyo_buildings };
         table.board[26].owner = 1;
         table.board[27].owner = 1;
@@ -938,19 +938,19 @@ fn both_bankruptcy_triggers_eliminate_and_free_holdings() {
 #[test]
 fn end_conditions_cover_last_standing_a_non_roller_reaching_target_and_ranking_above_it() {
     // The owner, not the roller, crosses the target on collected rent.
-    let mut table = playing(3, 3000);
-    // Tokyo with 3 buildings in a full Gold group: rent 35 x 11 = 385; holdings 350 + 600 + 350 + 400.
+    let mut table = playing(3, 4500);
+    // Tokyo with 3 buildings in a full Gold group: rent 35 x 7 = 245; holdings 350 + 600 + 350 + 400.
     table.board[25] = Lot { owner: 1, buildings: 3 };
     table.board[26].owner = 1;
     table.board[27].owner = 1;
-    table.seats[1].cash = 3_000 - 385 - 1_700 + 1;
+    table.seats[1].cash = 4_500 - 245 - 1_700 + 1;
     table.seats[0].position = 22;
     roll(&mut table, 3, T0 + 1);
-    assert_eq!(table.net_worth(1), 3_001);
+    assert_eq!(table.net_worth(1), 4_501);
     assert_eq!(table.phase, TablePhase::Finished);
 
     // Two seats above the target rank by net worth.
-    let mut table = playing(3, 3000);
+    let mut table = playing(3, 1800);
     table.seats[0].cash = 3_100;
     table.seats[1].cash = 3_500;
     table.seats[0].position = 8;
@@ -959,7 +959,7 @@ fn end_conditions_cover_last_standing_a_non_roller_reaching_target_and_ranking_a
     assert_eq!(table.payouts().unwrap()[..3], [900_000, 2_010_000, 0]);
 
     // At most one active seat ends the game even below the target.
-    let mut table = playing(2, 7000);
+    let mut table = playing(2, 4500);
     table.seats[1].strikes = 2;
     roll(&mut table, 1, T0 + 1);
     table.pass(wallets()[0], T0 + 2).unwrap();
@@ -969,7 +969,7 @@ fn end_conditions_cover_last_standing_a_non_roller_reaching_target_and_ranking_a
 
 #[test]
 fn rejected_actions_never_mutate_the_table() {
-    let mut table = playing(3, 7000);
+    let mut table = playing(3, 4500);
     table.seats[0].cash = 40;
     table.board[1].owner = 0;
     table.board[2].owner = 0;
@@ -1012,7 +1012,7 @@ const HOLDINGS: [(usize, u8); 5] = [(2, 0), (11, 0), (1, 1), (3, 1), (12, 2)];
 #[test]
 fn a_trade_opens_takes_replaceable_offers_and_the_accepted_swap_completes_a_group() {
     let w = wallets();
-    let mut table = auction(3, 7000, 12, 2, &HOLDINGS);
+    let mut table = auction(3, 4500, 12, 2, &HOLDINGS);
     assert_eq!(table.seats[0].position, AUCTION);
     assert_eq!((table.stage, table.stage_deadline), (Stage::TradeOpen, T0 + 1 + TRADE_OPEN_SECONDS));
     let before = table.clone();
@@ -1062,11 +1062,11 @@ fn a_trade_opens_takes_replaceable_offers_and_the_accepted_swap_completes_a_grou
 #[test]
 fn pass_skips_or_cancels_a_trade_and_a_six_keeps_its_extra_roll() {
     let w = wallets();
-    let mut table = auction(3, 7000, 12, 2, &HOLDINGS);
+    let mut table = auction(3, 4500, 12, 2, &HOLDINGS);
     table.pass(w[0], T0 + 2).unwrap();
     assert_eq!((table.turn, table.stage, table.trade), (1, Stage::PreRoll, Trade::default()));
 
-    let mut table = auction(3, 7000, 8, 6, &HOLDINGS);
+    let mut table = auction(3, 4500, 8, 6, &HOLDINGS);
     assert_eq!(table.stage, Stage::TradeOpen);
     table.open_trade(w[0], 11, T0 + 2).unwrap();
     table.offer_trade(w[1], 1, T0 + 3).unwrap();
@@ -1080,10 +1080,10 @@ fn pass_skips_or_cancels_a_trade_and_a_six_keeps_its_extra_roll() {
 #[test]
 fn trade_open_is_skipped_without_an_unbuilt_property_on_both_sides() {
     // The lander owns nothing.
-    let table = auction(3, 7000, 12, 2, &[(1, 1)]);
+    let table = auction(3, 4500, 12, 2, &[(1, 1)]);
     assert_eq!((table.seats[0].position, table.turn, table.stage), (AUCTION, 1, Stage::PreRoll));
     // The lander's only property is built.
-    let mut table = playing(3, 7000);
+    let mut table = playing(3, 4500);
     table.board[1] = Lot { owner: 0, buildings: 1 };
     table.board[2] = Lot { owner: 0, buildings: 1 };
     table.board[3].owner = 1;
@@ -1091,7 +1091,7 @@ fn trade_open_is_skipped_without_an_unbuilt_property_on_both_sides() {
     roll(&mut table, 2, T0 + 1);
     assert_eq!((table.turn, table.stage), (1, Stage::PreRoll));
     // Nobody else could offer: seat 1 is built out and seat 2 owns nothing.
-    let mut table = playing(3, 7000);
+    let mut table = playing(3, 4500);
     table.board[3].owner = 0;
     for space in [18, 19, 20] {
         table.board[space] = Lot { owner: 1, buildings: 2 };
@@ -1104,7 +1104,7 @@ fn trade_open_is_skipped_without_an_unbuilt_property_on_both_sides() {
 #[test]
 fn the_trade_bonus_can_reach_the_target_and_end_the_game() {
     let w = wallets();
-    let mut table = auction(3, 3000, 12, 2, &[(1, 0), (2, 1)]);
+    let mut table = auction(3, 1800, 12, 2, &[(1, 0), (2, 1)]);
     table.seats[0].cash = 2_820;
     assert_eq!(table.net_worth(0), 2_880);
     table.open_trade(w[0], 1, T0 + 2).unwrap();
@@ -1121,7 +1121,7 @@ fn the_trade_bonus_can_reach_the_target_and_end_the_game() {
 #[test]
 fn a_trade_that_drops_net_worth_to_zero_or_below_bankrupts_that_seat() {
     let w = wallets();
-    let mut table = auction(3, 7000, 12, 2, &[(1, 0), (27, 1)]);
+    let mut table = auction(3, 4500, 12, 2, &[(1, 0), (27, 1)]);
     table.seats[1].cash = -300;
     assert_eq!(table.net_worth(1), 100);
     table.open_trade(w[0], 1, T0 + 2).unwrap();
@@ -1149,13 +1149,13 @@ fn a_trade_that_drops_net_worth_to_zero_or_below_bankrupts_that_seat() {
 fn trade_timeouts_strike_only_the_lander_and_an_empty_offer_window_cancels_without_one() {
     let w = wallets();
     // TradeOpen times out: strike, and the turn ends.
-    let mut table = auction(3, 7000, 12, 2, &HOLDINGS);
+    let mut table = auction(3, 4500, 12, 2, &HOLDINGS);
     assert!(table.force_timeout(table.stage_deadline - 1).is_err());
     table.force_timeout(table.stage_deadline).unwrap();
     assert_eq!((table.seats[0].strikes, table.turn, table.stage), (1, 1, Stage::PreRoll));
 
     // No offer arrives: the window closing cancels the trade with no strike, and a 6 still rolls again.
-    let mut table = auction(3, 7000, 8, 6, &HOLDINGS);
+    let mut table = auction(3, 4500, 8, 6, &HOLDINGS);
     table.open_trade(w[0], 11, T0 + 2).unwrap();
     let closes = table.trade.deadline;
     assert!(table.force_timeout(closes - 1).is_err());
@@ -1165,7 +1165,7 @@ fn trade_timeouts_strike_only_the_lander_and_an_empty_offer_window_cancels_witho
     assert_eq!(table.trade, Trade::default());
 
     // Offers arrive but the lander never decides: cancel, strike the lander, never the offerers.
-    let mut table = auction(3, 7000, 8, 6, &HOLDINGS);
+    let mut table = auction(3, 4500, 8, 6, &HOLDINGS);
     table.open_trade(w[0], 11, T0 + 2).unwrap();
     table.offer_trade(w[1], 1, T0 + 3).unwrap();
     let before = table.clone();
@@ -1177,13 +1177,13 @@ fn trade_timeouts_strike_only_the_lander_and_an_empty_offer_window_cancels_witho
     assert_eq!((table.turn, table.stage, table.trade), (1, Stage::PreRoll, Trade::default()), "the turn ends despite the 6");
 
     // A third strike in a trade stage forfeits the lander.
-    let mut table = auction(3, 7000, 12, 2, &HOLDINGS);
+    let mut table = auction(3, 4500, 12, 2, &HOLDINGS);
     table.seats[0].strikes = 2;
     table.force_timeout(table.stage_deadline).unwrap();
     assert_eq!((table.seats[0].eliminated_at, table.board[2].owner, table.board[11].owner), (1, NO_OWNER, NO_OWNER));
 
     // The idle deadline still ends a stalled trade by ranking.
-    let mut table = auction(3, 7000, 12, 2, &HOLDINGS);
+    let mut table = auction(3, 4500, 12, 2, &HOLDINGS);
     table.open_trade(w[0], 11, T0 + 2).unwrap();
     table.offer_trade(w[1], 1, T0 + 3).unwrap();
     table.force_timeout(T0 + 3 + IDLE_SECONDS).unwrap();
@@ -1193,7 +1193,7 @@ fn trade_timeouts_strike_only_the_lander_and_an_empty_offer_window_cancels_witho
 #[test]
 fn eliminated_seats_cannot_offer_and_accept_revalidates_both_properties() {
     let w = wallets();
-    let mut table = auction(4, 7000, 12, 2, &[(2, 0), (11, 0), (1, 1), (3, 1), (12, 2), (19, 3)]);
+    let mut table = auction(4, 4500, 12, 2, &[(2, 0), (11, 0), (1, 1), (3, 1), (12, 2), (19, 3)]);
     table.open_trade(w[0], 11, T0 + 2).unwrap();
     // Seat 3 is eliminated by fixture after the trade opened (no instruction can do it here).
     table.seats[3].eliminated_at = 1;
@@ -1228,7 +1228,7 @@ fn open_records_the_board_theme() {
     let w = wallets();
     for theme in 0..BOARD_THEMES {
         let mut table = Table::default();
-        table.open(w[0], name("h"), USDC, 2, 3000, theme, T0).unwrap();
+        table.open(w[0], name("h"), USDC, 2, 1800, theme, T0).unwrap();
         assert_eq!(table.theme, theme);
     }
 }
@@ -1236,7 +1236,7 @@ fn open_records_the_board_theme() {
 #[test]
 fn forfeit_frees_the_seats_properties_passes_its_turn_and_can_end_the_game() {
     let w = wallets();
-    let mut table = playing(3, 7000);
+    let mut table = playing(3, 4500);
     table.board[1] = Lot { owner: 0, buildings: 0 };
     table.board[2] = Lot { owner: 0, buildings: 2 };
     table.board[5] = Lot { owner: 1, buildings: 0 };
@@ -1268,7 +1268,7 @@ fn forfeit_frees_the_seats_properties_passes_its_turn_and_can_end_the_game() {
 #[test]
 fn forfeit_during_a_trade_withdraws_the_offer_or_cancels_the_lander_trade() {
     let w = wallets();
-    let mut table = auction(4, 7000, 12, 2, &HOLDINGS);
+    let mut table = auction(4, 4500, 12, 2, &HOLDINGS);
     table.open_trade(w[0], 11, T0 + 2).unwrap();
     table.offer_trade(w[1], 1, T0 + 3).unwrap();
     table.offer_trade(w[2], 12, T0 + 3).unwrap();
