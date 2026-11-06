@@ -444,12 +444,12 @@ function PropertyCard({ view, space: index, seat, heading, onClose, children }: 
   );
   const ladder = space.kind === 'city'
     ? [['Rent', space.rent!], ['Whole group', space.rent! * board.rules.groupRentMultiplier], ...board.rules.buildingRentMultipliers.map((m, i) => [buildingLabel(i + 1), space.rent! * m] as [string, number])] as [string, number][]
-    : [1, 2, 3, 4].map(count => [`Owner has ${count}`, space.rent! * count] as [string, number]);
+    : [1, 2, 3, 4].map(count => [`Owner has ${count} of 4 public`, space.rent! * count] as [string, number]);
   const current = lot.owner === NO_OWNER ? -1 : rent(view, index);
   return (
     <section className="panel deed" data-testid="property-card" data-space={index}>
       <header style={{ background: color, color: space.group ? GROUP_INK[space.group] : '#FFFFFF' }}><small>{heading}</small><b>{space.name}</b>{onClose && <button className="close" onClick={onClose} aria-label="Close">×</button>}</header>
-      <p className="deed-line">{space.group === 'Public' ? 'Public property' : `${space.group} group`}, price {money(space.price ?? 0)}{space.buildingCost ? `, houses and hotel ${money(space.buildingCost)} each` : ''}</p>
+      <p className="deed-line">{space.group === 'Public' ? 'Public property' : `${space.group} group`}, price {money(space.price ?? 0)}{space.buildingCost ? `, houses and hotel ${money(space.buildingCost)} each` : '. No houses here: rent grows with each public property the owner holds.'}</p>
       <table><tbody>{ladder.map(([label, value]) => <tr key={label} className={value === current ? 'now' : ''}><td>{label}</td><td>{money(value)}</td></tr>)}</tbody></table>
       <p className="deed-line">{lot.owner === NO_OWNER ? 'For sale' : `Owned by ${lot.owner === seat ? 'you' : view.seats[lot.owner].name}${lot.buildings ? `, ${lot.buildings === HOTEL ? 'a hotel' : buildingLabel(lot.buildings)}` : ''}`}</p>
       {children}
