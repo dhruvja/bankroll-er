@@ -12,7 +12,7 @@ export const EPHEMERAL_QUEUE = '5hBR571xnXppuCPveTrctfTU7tJLSN94nq7kv7FRK5Tc';
 export const TOKEN_SCALE = 1_000_000;
 export const PROTOCOL_FEE_BPS = 300;
 export const WITHDRAW_MINIMUM = 500_000;
-export const ENTRIES = [1_000_000, 5_000_000, 10_000_000] as const;
+export const ENTRIES = [1_000, 1_000_000, 5_000_000] as const;
 /** Ranked shares in bps of the pot, by player count (mirrors the program `const`). */
 export const SHARES_BPS: Record<number, number[]> = { 2: [9700], 3: [6700, 3000], 4: [6000, 2700, 1000] };
 export function invariant(condition: unknown, message: string): asserts condition {

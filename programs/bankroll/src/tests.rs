@@ -572,6 +572,26 @@ fn ranked_payouts_cover_every_order_and_tie_for_two_three_and_four_seats() {
     assert!(playing(2, 3000).payouts().is_err(), "only a finished game pays out");
 }
 
+#[test]
+fn a_tenth_of_a_cent_entry_opens_and_pays_out_without_losing_the_fee() {
+    let w = wallets();
+    let mut free = Table::default();
+    free.open(w[0], name("h"), ENTRIES[0], 2, 3000, 0, T0).unwrap();
+    assert_eq!(free.entry, 1_000);
+    for (nets, eliminated, expected) in [
+        (&[3000i64, 2000][..], &[0u8, 0][..], [1_940, 0, 0, 0]),
+        (&[4000, 3000, 2000, 1000][..], &[0, 0, 0, 0][..], [2_400, 1_080, 400, 0]),
+        (&[4000, 4000, 4000, 1000][..], &[0, 0, 0, 0][..], [1_293, 1_293, 1_293, 0]),
+    ] {
+        let mut table = finished(nets, eliminated);
+        table.entry = ENTRIES[0];
+        let payouts = table.payouts().unwrap();
+        assert_eq!(payouts, expected, "nets {nets:?}");
+        let pot = table.pot().unwrap();
+        assert!(payouts.iter().sum::<u64>() <= pot - pot * FEE_BPS / 10_000, "fee always reaches the treasury");
+    }
+}
+
 /// Size of the live devnet table_v1 accounts (read from the rollup on 2026-11-06).
 const LIVE_TABLE_SPACE: usize = 1495;
 

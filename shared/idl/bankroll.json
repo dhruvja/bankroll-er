@@ -1397,7 +1397,7 @@
     {
       "code": 6000,
       "name": "InvalidEntry",
-      "msg": "Entry must be 1, 5, or 10 devnet USDC"
+      "msg": "Entry must be 0.001, 1, or 5 devnet USDC"
     },
     {
       "code": 6001,

@@ -20,7 +20,8 @@ pub const OTHER_SEAT_RETRY_SECONDS: i64 = 3 * crate::board::VRF_RETRY_SECONDS;
 /// Ranked shares in bps of the pot, indexed by `player_count - 2`. The 2-player row (9700 to the
 /// winner) was confirmed by the user on 2026-11-03. Every row plus the fee sums to 10,000.
 pub const SHARES_BPS: [[u64; 3]; 3] = [[9700, 0, 0], [6700, 3000, 0], [6000, 2700, 1000]];
-pub const ENTRIES: [u64; 3] = [1_000_000, 5_000_000, 10_000_000];
+/// 0.001 USDC is the free-play entry: one sponsored 0.50 deposit then covers about 500 games.
+pub const ENTRIES: [u64; 3] = [1_000, 1_000_000, 5_000_000];
 /// Zero bytes allocated after the serialized Table. Later phases append fields here without
 /// changing the account size; old accounts read the new fields as zero.
 /// 1023 since `theme` took one byte, so TABLE_SPACE (and every live account) stays the same size.
@@ -181,7 +182,7 @@ pub enum VrfPurpose {
 
 #[error_code]
 pub enum GameError {
-    #[msg("Entry must be 1, 5, or 10 devnet USDC")]
+    #[msg("Entry must be 0.001, 1, or 5 devnet USDC")]
     InvalidEntry,
     #[msg("Players must be 2-4, the target 3000, 5000 or 7000, and the theme 0-2")]
     InvalidConfig,
