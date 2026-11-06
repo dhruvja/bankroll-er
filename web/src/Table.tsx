@@ -2,13 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import type { Keypair } from '@solana/web3.js';
 import { QRCodeSVG } from 'qrcode.react';
 import { board, isProperty } from '../../shared/board';
-import { PROTOCOL_FEE_BPS, TOKEN_SCALE, WITHDRAW_MINIMUM } from '../../shared/config';
+import { THEMES, spacesFor } from '../../shared/themes';
 import { NO_OFFER, NO_OWNER, canBuild, currentSeat, expectedPayouts, isActive, netWorth, rent, saleValue, tradeOffers, tradeable, type TableView } from '../../shared/chain';
-import { acceptTrade, act, canReceive, client, friendlyError, joinTable, property, runCrank, subscribeTable, tableTransactions, trade, watchTableTransactions, type TableTransaction } from './lib/game';
-import { Board, Die, GROUP_COLORS, SEAT_COLORS, money, useDie, useTokenPositions, type Highlight } from './Board';
+import { acceptTrade, act, client, friendlyError, joinTable, property, runCrank, subscribeTable, tableTransactions, trade, watchTableTransactions, type TableTransaction } from './lib/game';
+import { Board, Die, GROUP_COLORS, GROUP_INK, SEAT_COLORS, SEAT_INK, money, useDie, useTokenPositions, type Highlight } from './Board';
 import { PublicKey } from '@solana/web3.js';
 
-export const usdc = (atoms: number) => (atoms / TOKEN_SCALE).toFixed(2);
 const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
 const LAST_GAME = 'bankroll.lastGame';
 export function navigate(path: string) { history.pushState(null, '', path); dispatchEvent(new PopStateEvent('popstate')); }
@@ -58,7 +57,7 @@ function useFeed(view: TableView | undefined, key: string) {
     const name = (seat: number) => view.seats[seat]?.name ?? `Seat ${seat + 1}`, at = Date.now(), added: FeedEntry[] = [];
     const lander = currentSeat(before);
     if (before.phase === 'playing' && before.stage === 'rolling' && view.stage !== 'rolling' && view.vrfNonce === before.vrfNonce && view.lastRoll) {
-      added.push({ at, kind: 'roll', text: `${name(lander)} rolled a ${view.lastRoll}${view.lastCard ? '' : ` to ${board.spaces[view.seats[lander].position].name}`}` });
+      added.push({ at, kind: 'roll', text: `${name(lander)} rolled a ${view.lastRoll}${view.lastCard ? '' : ` to ${spacesFor(view.theme)[view.seats[lander].position].name}`}` });
       if (view.lastCard) added.push({ at, kind: 'card', text: `${name(lander)} drew: ${board.luckyDeck[view.lastCard - 1].text}` });
       const lot = view.board[view.seats[lander].position];
       if (lot.owner !== NO_OWNER && lot.owner !== lander) {
@@ -69,15 +68,15 @@ function useFeed(view: TableView | undefined, key: string) {
     const moved: { space: number; from: number; to: number }[] = [];
     view.board.forEach((lot, space) => {
       const was = before.board[space];
-      if (was.owner === NO_OWNER && lot.owner !== NO_OWNER) added.push({ at, kind: 'buy', text: `${name(lot.owner)} bought ${board.spaces[space].name} for ${money(board.spaces[space].price ?? 0)}` });
-      else if (was.owner !== NO_OWNER && lot.owner === NO_OWNER && before.phase === 'playing' && view.phase === 'playing' && !view.seats[was.owner]?.eliminatedAt) added.push({ at, kind: 'sell', text: `${name(was.owner)} sold ${board.spaces[space].name}` });
+      if (was.owner === NO_OWNER && lot.owner !== NO_OWNER) added.push({ at, kind: 'buy', text: `${name(lot.owner)} bought ${spacesFor(view.theme)[space].name} for ${money(spacesFor(view.theme)[space].price ?? 0)}` });
+      else if (was.owner !== NO_OWNER && lot.owner === NO_OWNER && before.phase === 'playing' && view.phase === 'playing' && !view.seats[was.owner]?.eliminatedAt) added.push({ at, kind: 'sell', text: `${name(was.owner)} sold ${spacesFor(view.theme)[space].name}` });
       else if (was.owner !== NO_OWNER && lot.owner !== NO_OWNER && was.owner !== lot.owner) moved.push({ space, from: was.owner, to: lot.owner });
-      if (lot.owner === was.owner && lot.buildings > was.buildings) added.push({ at, kind: 'build', text: `${name(lot.owner)} built on ${board.spaces[space].name} (${lot.buildings}/3)` });
+      if (lot.owner === was.owner && lot.buildings > was.buildings) added.push({ at, kind: 'build', text: `${name(lot.owner)} built on ${spacesFor(view.theme)[space].name} (${lot.buildings}/3)` });
     });
     // A swap is two lots that changed hands in opposite directions; pairing them survives coalesced updates.
     for (const [i, x] of moved.entries()) {
       const y = moved.slice(i + 1).find(other => other.from === x.to && other.to === x.from);
-      if (y) added.push({ at, kind: 'trade', text: `${name(x.to)} and ${name(y.to)} traded: ${name(x.to)} got ${board.spaces[x.space].name}, ${name(y.to)} got ${board.spaces[y.space].name}, ${money(board.rules.tradeBonus)} each` });
+      if (y) added.push({ at, kind: 'trade', text: `${name(x.to)} and ${name(y.to)} traded: ${name(x.to)} got ${spacesFor(view.theme)[x.space].name}, ${name(y.to)} got ${spacesFor(view.theme)[y.space].name}, ${money(board.rules.tradeBonus)} each` });
     }
     view.seats.forEach((seat, index) => {
       const was = before.seats[index];
@@ -115,9 +114,7 @@ const STAGE_SECONDS: Record<string, number> = {
   tradeopen: board.rules.deadlinesSec.tradeOpen, tradeoffers: board.rules.deadlinesSec.tradeOffers + board.rules.deadlinesSec.tradeOwnerDecision,
 };
 
-export function TableScreen({ table, nonce, me, signer, refresh, openWallet }: {
-  table: string; nonce: number; me: string; signer: Keypair; refresh: () => void; openWallet: () => void;
-}) {
+export function TableScreen({ table, nonce, me, signer }: { table: string; nonce: number; me: string; signer: Keypair }) {
   const { view, connected, readError } = useTable(table);
   const { busy, error, run } = useBusy(), now = useNow();
   const [selected, setSelected] = useState<number>(), [requested, setRequested] = useState(false), [name, setName] = useState('');
@@ -127,7 +124,6 @@ export function TableScreen({ table, nonce, me, signer, refresh, openWallet }: {
   const die = useDie(current ? view : undefined, requested);
   const positions = useTokenPositions(current ? view : undefined, die.settleAt);
   useEffect(() => (current && seat >= 0 ? runCrank(table, signer) : undefined), [table, signer, current, seat]);
-  useEffect(() => { if (view?.phase === 'free' || view?.phase === 'finished') refresh(); }, [view?.phase, refresh]);
   useEffect(() => {
     if (!current || seat < 0) return;
     try { if (view.phase === 'free') localStorage.removeItem(LAST_GAME); else localStorage.setItem(LAST_GAME, `/play/${table}/${nonce}`); } catch { /* Convenience only. */ }
@@ -169,7 +165,6 @@ export function TableScreen({ table, nonce, me, signer, refresh, openWallet }: {
   const deadline = view.phase === 'lobby' ? view.lobbyDeadline : view.stage === 'tradeoffers' && now < view.trade.deadline && seat !== turnSeat ? view.trade.deadline : view.stageDeadline;
   const left = Math.max(0, Math.ceil(deadline - now));
   const idleAt = view.lastActionAt + board.rules.deadlinesSec.idle, timedOut = view.phase === 'playing' && view.stage !== 'ordering' && now >= idleAt;
-  const pot = view.entry * view.playerCount;
   const mine = seat >= 0 ? view.seats[seat] : undefined;
 
   return (
@@ -177,38 +172,35 @@ export function TableScreen({ table, nonce, me, signer, refresh, openWallet }: {
       data-my-turn={myTurn ? 'yes' : 'no'} data-lander={turnSeat} data-nonce={view.gameNonce} data-busy={busy ? 'yes' : 'no'}>
       <div className="table-head">
         <h1>Table {view.index + 1}</h1>
-        <p>{usdc(view.entry)} USDC entry, {usdc(pot)} pot, first to {money(view.target)}</p>
+        <p>{THEMES[view.theme]?.name ?? 'Classic'} board, first to {money(view.target)} net worth</p>
         <span className={`link-state${connected ? '' : ' offline'}`} data-testid="connection">{connected ? 'Live' : 'Reconnecting…'}</span>
       </div>
       {tradeAlert && <div className="alert" role="status" data-testid="trade-alert">
         {view.stage === 'tradeopen' ? `${view.seats[turnSeat].name} landed on Auction and is picking a property to trade.`
-          : `${view.seats[turnSeat].name} puts ${board.spaces[view.trade.space].name} up for a swap. Make an offer within ${Math.max(0, Math.ceil(view.trade.deadline - now))}s.`}
+          : `${view.seats[turnSeat].name} puts ${spacesFor(view.theme)[view.trade.space].name} up for a swap. Make an offer within ${Math.max(0, Math.ceil(view.trade.deadline - now))}s.`}
       </div>}
-      {timedOut && <div className="alert warn" role="status" data-testid="timed-out">This game timed out after an hour without a move. It is ending by ranking and paying out now.</div>}
+      {timedOut && <div className="alert warn" role="status" data-testid="timed-out">This game timed out after an hour without a move. It ends now, ranked by net worth.</div>}
       {!timedOut && view.phase === 'playing' && view.stage !== 'ordering' && idleAt - now < 600 && <div className="alert warn" role="status">No moves for {Math.floor((now - view.lastActionAt) / 60)} minutes. If nobody moves, the game ends by ranking in {clock(Math.max(0, idleAt - now))}.</div>}
 
       <div className="table-grid">
-        <Board view={view} positions={positions} highlights={highlights} selected={selected} onSelect={space => setSelected(space === selected ? undefined : space)}>
-          <Center view={view} seat={seat} myTurn={myTurn} left={left} now={now} busy={busy} die={die} card={card} timedOut={timedOut}
-            onRoll={action('roll')} onBail={action('bail')} onStart={action('start')} onCancel={action('cancel')} />
-        </Board>
+        <div className="board-col">
+          <SeatStrip view={view} me={me} seats={[0, 1]} />
+          <Board view={view} positions={positions} highlights={highlights} selected={selected} onSelect={space => setSelected(space === selected ? undefined : space)}>
+            <Center view={view} seat={seat} myTurn={myTurn} left={left} now={now} busy={busy} die={die} card={card} timedOut={timedOut}
+              onRoll={action('roll')} onBail={action('bail')} onStart={action('start')} onCancel={action('cancel')} onBuy={action('buy')} onPass={action('pass')} />
+          </Board>
+          <SeatStrip view={view} me={me} seats={[2, 3]} />
+        </div>
 
         <div className="side">
           <Players view={view} me={me} />
           {error && <p className="error" role="alert" data-testid="error">{error}</p>}
 
           {view.phase === 'lobby' && <Lobby view={view} seat={seat} table={table} nonce={nonce} name={name} setName={setName} busy={busy}
-            onJoin={() => void run(async () => { await joinTable(table, nonce, name.trim(), view.entry); refresh(); })} openWallet={openWallet} />}
+            onJoin={() => void run(() => joinTable(table, nonce, name.trim(), view.entry))} />}
 
           {view.phase === 'playing' && view.stage === 'buydecision' && <PropertyCard view={view} space={view.seats[turnSeat].position} seat={seat}
-            heading={myTurn ? 'Buy this property?' : `${view.seats[turnSeat].name} is deciding`}>
-            {myTurn && <div className="actions">
-              <button className="btn primary" data-testid="buy" data-price={board.spaces[view.seats[seat].position].price ?? 0} disabled={busy || view.seats[seat].cash < (board.spaces[view.seats[seat].position].price ?? 0)} onClick={action('buy')}>
-                Buy for {money(board.spaces[view.seats[seat].position].price ?? 0)}</button>
-              <button className="btn" data-testid="pass" disabled={busy} onClick={action('pass')}>Pass</button>
-              <span className="timer">{left}s</span>
-            </div>}
-          </PropertyCard>}
+            heading={myTurn ? 'Buy this property?' : `${view.seats[turnSeat].name} is deciding`} />}
 
           {view.phase === 'playing' && (view.stage === 'tradeopen' || view.stage === 'tradeoffers') && seat >= 0 && (
             <TradeSheet view={view} seat={seat} now={now} busy={busy}
@@ -221,19 +213,19 @@ export function TableScreen({ table, nonce, me, signer, refresh, openWallet }: {
 
           {selected !== undefined && view.phase === 'playing' && <PropertyCard view={view} space={selected} seat={seat} heading="Property" onClose={() => setSelected(undefined)}>
             {myTurn && view.board[selected].owner === seat && (view.stage === 'preroll' || view.stage === 'buydecision') && <div className="actions">
-              {view.stage === 'preroll' && board.spaces[selected].kind === 'city' && <button className="btn" data-testid="card-build" disabled={busy || !canBuild(view, seat, selected)}
-                onClick={() => void run(() => property(table, 'build', selected))}>Build for {money(board.spaces[selected].buildingCost ?? 0)}</button>}
+              {view.stage === 'preroll' && spacesFor(view.theme)[selected].kind === 'city' && <button className="btn" data-testid="card-build" disabled={busy || !canBuild(view, seat, selected)}
+                onClick={() => void run(() => property(table, 'build', selected))}>Build for {money(spacesFor(view.theme)[selected].buildingCost ?? 0)}</button>}
               <button className="btn" data-testid="card-sell" disabled={busy} onClick={() => void run(async () => { await property(table, 'sell', selected); setSelected(undefined); })}>
                 Sell for {money(saleValue(view, selected))}</button>
             </div>}
           </PropertyCard>}
 
           {view.phase === 'playing' && seat >= 0 && <Holdings view={view} seat={seat} buildNow={myTurn && view.stage === 'preroll'} onSelect={setSelected} />}
-          {(view.phase === 'finished' || view.phase === 'free' && view.endedAt > 0) && <Results view={view} me={me} openWallet={openWallet} />}
-          {view.phase === 'free' && !view.endedAt && <section className="panel" data-testid="refunded"><h2>Entries refunded</h2>
-            <p className="quiet">The game never started, so every entry went back to its play balance with no fee.</p>
+          {(view.phase === 'finished' || view.phase === 'free' && view.endedAt > 0) && <Results view={view} me={me} />}
+          {view.phase === 'free' && !view.endedAt && <section className="panel" data-testid="refunded"><h2>Table closed</h2>
+            <p className="quiet">The game never started.</p>
             <button className="btn primary" onClick={() => navigate('/')}>Back to the tables</button></section>}
-          {view.phase === 'refunding' && <Refunding view={view} seat={seat} now={now} openWallet={openWallet} />}
+          {view.phase === 'refunding' && <Closing view={view} />}
           <Feed feed={feed} />
           <TxLog table={table} since={view.lobbyDeadline - LOBBY_SECONDS} />
         </div>
@@ -242,9 +234,10 @@ export function TableScreen({ table, nonce, me, signer, refresh, openWallet }: {
   );
 }
 
-function Center({ view, seat, myTurn, left, now, busy, die, card, timedOut, onRoll, onBail, onStart, onCancel }: {
+function Center({ view, seat, myTurn, left, now, busy, die, card, timedOut, onRoll, onBail, onStart, onCancel, onBuy, onPass }: {
   view: TableView; seat: number; myTurn: boolean; left: number; now: number; busy: boolean; die: { face: number; tumbling: boolean };
   card?: { seat: number; card: number }; timedOut: boolean; onRoll: () => void; onBail: () => void; onStart: () => void; onCancel: () => void;
+  onBuy: () => void; onPass: () => void;
 }) {
   const turnSeat = currentSeat(view), who = view.seats[turnSeat];
   if (view.phase === 'lobby') return (
@@ -253,21 +246,21 @@ function Center({ view, seat, myTurn, left, now, busy, die, card, timedOut, onRo
       <p className="quiet">Lobby closes in {clock(left)}</p>
       {view.host === view.seats[seat]?.wallet && <div className="actions">
         <button className="btn primary" data-testid="start-game" disabled={busy || view.playerCount < 2} onClick={onStart}>Start game</button>
-        <button className="btn ghost" data-testid="cancel-table" disabled={busy} onClick={onCancel}>Cancel and refund</button>
+        <button className="btn ghost" data-testid="cancel-table" disabled={busy} onClick={onCancel}>Cancel table</button>
       </div>}
       {seat >= 0 && view.host !== view.seats[seat].wallet && <p className="quiet">You’re in. Waiting for the host to start.</p>}
     </div>
   );
   if (view.phase !== 'playing') {
     // Only a game that ended has a ranking; a refunded lobby may have a single seat.
-    if (!view.endedAt) return <div className="center-stack"><p className="big">No game</p><p className="quiet">The game never started, so every entry comes back in full.</p></div>;
+    if (!view.endedAt) return <div className="center-stack"><p className="big">No game</p><p className="quiet">The game never started.</p></div>;
     const payouts = view.phase === 'free' ? view.seats.map(item => item.payout) : expectedPayouts(view).payouts;
     const ranked = view.seats.map((item, index) => ({ item, payout: payouts[index] })).sort((a, b) => b.payout - a.payout);
     return (
       <div className="center-stack">
         <p className="quiet">Game over</p>
         <p className="big" data-testid="winner">{ranked[0].item.name} wins</p>
-        <p className="mint">{usdc(ranked[0].payout)} USDC</p>
+        <p className="mint">{money(netWorth(view, view.seats.indexOf(ranked[0].item)))}</p>
       </div>
     );
   }
@@ -295,6 +288,18 @@ function Center({ view, seat, myTurn, left, now, busy, die, card, timedOut, onRo
       </div>
       {view.stage !== 'rolling' && view.stage !== 'ordering' && <p className="quiet" data-testid="countdown">{timedOut ? 'Timed out' : `${left}s left`}</p>}
       {slow && <p className="quiet">The roll is slow. Asking the oracle again…</p>}
+      {view.stage === 'buydecision' && (() => {
+        const space = spacesFor(view.theme)[who.position], price = space.price ?? 0;
+        return myTurn ? (
+          <div className="decide">
+            <p className="decide-name">{space.name}</p>
+            <div className="actions">
+              <button className="btn primary" data-testid="buy" data-price={price} disabled={busy || who.cash < price} onClick={onBuy}>Buy {money(price)}</button>
+              <button className="btn" data-testid="pass" disabled={busy} onClick={onPass}>Pass</button>
+            </div>
+          </div>
+        ) : <p className="decide-name">{space.name}</p>;
+      })()}
       {card && <div className="lucky-reveal" data-testid="lucky-card"><span>{view.seats[card.seat].name} drew a Lucky card</span><b>{board.luckyDeck[card.card - 1].text}</b></div>}
       {myTurn && view.stage === 'preroll' && !timedOut && (jailed ? (
         <div className="actions">
@@ -307,6 +312,27 @@ function Center({ view, seat, myTurn, left, now, busy, die, card, timedOut, onRo
   );
 }
 
+/** Phones: two seats above the board and two below, each with cash and net worth. */
+function SeatStrip({ view, me, seats }: { view: TableView; me: string; seats: number[] }) {
+  const live = view.phase !== 'lobby', turn = view.phase === 'playing' ? currentSeat(view) : -1;
+  return (
+    <div className="seat-strip">{seats.map((index, at) => {
+      const seat = view.seats[index];
+      if (!seat) return <span key={index} />;
+      const out = seat.eliminatedAt > 0;
+      return (
+        <div key={seat.wallet} className={`seat-chip${at ? ' right' : ''}${index === turn ? ' turn' : ''}${out ? ' out' : ''}`}>
+          <span className="player-token" style={{ background: SEAT_COLORS[index], color: SEAT_INK[index] }}>{seat.name.slice(0, 1).toUpperCase()}</span>
+          <span className="seat-text">
+            <span className="seat-name">{seat.name}{seat.wallet === me && <em> (you)</em>}{seat.jailTurns > 0 && <small> · jail</small>}</span>
+            {live && <span className="seat-money"><span className={`cash${seat.cash < 0 ? ' neg' : ''}`}>{money(seat.cash)}</span> <span className="worth">({money(netWorth(view, index))})</span></span>}
+          </span>
+        </div>
+      );
+    })}</div>
+  );
+}
+
 function Players({ view, me }: { view: TableView; me: string }) {
   const live = view.phase !== 'lobby';
   return (
@@ -316,10 +342,10 @@ function Players({ view, me }: { view: TableView; me: string }) {
         const status = out ? (seat.strikes >= board.rules.strikesToForfeit ? 'Forfeited' : 'Bankrupt') : seat.jailTurns ? `In jail, ${seat.jailTurns} left` : seat.cash < 0 ? 'In debt' : '';
         return (
           <div key={seat.wallet} className={`player${turn ? ' turn' : ''}${out ? ' out' : ''}`} data-testid={`player-${index}`} data-cash={seat.cash} data-networth={worth} data-out={out ? 'yes' : 'no'}>
-            <span className="player-token" style={{ background: SEAT_COLORS[index] }}>{seat.name.slice(0, 1).toUpperCase()}</span>
+            <span className="player-token" style={{ background: SEAT_COLORS[index], color: SEAT_INK[index] }}>{seat.name.slice(0, 1).toUpperCase()}</span>
             <div className="player-main">
               <div className="player-name">{seat.name}{seat.wallet === me && <em> (you)</em>}{view.host === seat.wallet && <small> host</small>}</div>
-              {live && !out && <div className="progress" title={`${money(worth)} of ${money(view.target)}`}><i style={{ width: `${Math.max(0, Math.min(100, worth / view.target * 100))}%` }} /></div>}
+              {live && !out && <div className="progress" title={`${money(worth)} of ${money(view.target)}`}><i style={{ width: `${Math.max(0, Math.min(100, worth / view.target * 100))}%`, background: SEAT_COLORS[index] }} /></div>}
               {(status || seat.strikes > 0) && <div className="player-status">{status}{seat.strikes > 0 && !out && <span className="strikes" title={`${seat.strikes} of 3 strikes`}>{Array.from({ length: 3 }, (_, i) => <i key={i} className={i < seat.strikes ? 'on' : ''} />)}</span>}</div>}
             </div>
             {live && !out && <div className="player-money">
@@ -334,8 +360,8 @@ function Players({ view, me }: { view: TableView; me: string }) {
   );
 }
 
-function Lobby({ view, seat, table, nonce, name, setName, busy, onJoin, openWallet }: {
-  view: TableView; seat: number; table: string; nonce: number; name: string; setName: (value: string) => void; busy: boolean; onJoin: () => void; openWallet: () => void;
+function Lobby({ view, seat, table, nonce, name, setName, busy, onJoin }: {
+  view: TableView; seat: number; table: string; nonce: number; name: string; setName: (value: string) => void; busy: boolean; onJoin: () => void;
 }) {
   const invite = `${location.origin}/play/${table}/${nonce}`, [copied, setCopied] = useState(false);
   const copy = () => void navigator.clipboard?.writeText(invite).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
@@ -344,11 +370,10 @@ function Lobby({ view, seat, table, nonce, name, setName, busy, onJoin, openWall
       {seat < 0 && view.playerCount < view.maxPlayers && <form className="join" onSubmit={event => { event.preventDefault(); if (name.trim()) onJoin(); }}>
         <h2>Join this table</h2>
         <label>Your name<input data-testid="join-name" required maxLength={16} value={name} onChange={event => setName(event.target.value)} /></label>
-        <button className="btn primary" data-testid="join-submit" disabled={busy || !name.trim()}>{busy ? 'Joining…' : `Join for ${usdc(view.entry)} USDC`}</button>
-        <p className="quiet">If your play balance is short, this first moves USDC in from your wallet (0.20 USDC fee, no SOL). <button type="button" className="linkish" onClick={openWallet}>Open wallet</button></p>
+        <button className="btn primary" data-testid="join-submit" disabled={busy || !name.trim()}>{busy ? 'Joining…' : 'Join table'}</button>
       </form>}
       <h2>Invite friends</h2>
-      <div className="qr"><QRCodeSVG value={invite} size={132} bgColor="#F4F6F8" fgColor="#0F1C2E" level="M" title="Scan to join this table" /></div>
+      <div className="qr"><QRCodeSVG value={invite} size={132} bgColor="#FFFFFF" fgColor="#111111" level="M" title="Scan to join this table" /></div>
       <input className="invite-url" data-testid="invite-link" readOnly value={invite} onFocus={event => event.currentTarget.select()} aria-label="Invite link" />
       <div className="actions">
         <button className="btn" onClick={copy}>{copied ? 'Copied' : 'Copy link'}</button>
@@ -362,7 +387,7 @@ function Lobby({ view, seat, table, nonce, name, setName, busy, onJoin, openWall
 function PropertyCard({ view, space: index, seat, heading, onClose, children }: {
   view: TableView; space: number; seat: number; heading: string; onClose?: () => void; children?: ReactNode;
 }) {
-  const space = board.spaces[index], lot = view.board[index];
+  const space = spacesFor(view.theme)[index], lot = view.board[index];
   const color = space.group ? GROUP_COLORS[space.group] : '#2C4466';
   if (!isProperty(space)) return (
     <section className="panel deed plain" data-testid="property-card">
@@ -377,7 +402,7 @@ function PropertyCard({ view, space: index, seat, heading, onClose, children }: 
   const current = lot.owner === NO_OWNER ? -1 : rent(view, index);
   return (
     <section className="panel deed" data-testid="property-card" data-space={index}>
-      <header style={{ background: color }}><small>{heading}</small><b>{space.name}</b>{onClose && <button className="close" onClick={onClose} aria-label="Close">×</button>}</header>
+      <header style={{ background: color, color: space.group ? GROUP_INK[space.group] : '#FFFFFF' }}><small>{heading}</small><b>{space.name}</b>{onClose && <button className="close" onClick={onClose} aria-label="Close">×</button>}</header>
       <p className="deed-line">{space.group === 'Public' ? 'Public property' : `${space.group} group`}, price {money(space.price ?? 0)}{space.buildingCost ? `, buildings ${money(space.buildingCost)}` : ''}</p>
       <table><tbody>{ladder.map(([label, value]) => <tr key={label} className={value === current ? 'now' : ''}><td>{label}</td><td>{money(value)}</td></tr>)}</tbody></table>
       <p className="deed-line">{lot.owner === NO_OWNER ? 'For sale' : `Owned by ${lot.owner === seat ? 'you' : view.seats[lot.owner].name}${lot.buildings ? `, ${lot.buildings} building${lot.buildings > 1 ? 's' : ''}` : ''}`}</p>
@@ -387,7 +412,7 @@ function PropertyCard({ view, space: index, seat, heading, onClose, children }: 
 }
 
 function Holdings({ view, seat, buildNow, onSelect }: { view: TableView; seat: number; buildNow: boolean; onSelect: (space: number) => void }) {
-  const owned = board.spaces.filter(space => view.board[space.index].owner === seat);
+  const owned = spacesFor(view.theme).filter(space => view.board[space.index].owner === seat);
   if (!owned.length) return null;
   return (
     <section className="panel holdings">
@@ -404,21 +429,21 @@ function Holdings({ view, seat, buildNow, onSelect }: { view: TableView; seat: n
 
 /** Whether `seat` would hold a whole city group after swapping `give` (NO_OFFER for none) for `gain`. */
 function completesGroup(view: TableView, seat: number, gain: number, give: number) {
-  const space = board.spaces[gain];
+  const space = spacesFor(view.theme)[gain];
   return space.kind === 'city' && Boolean(space.group)
     && board.groups[space.group!].every(member => member === gain || (member !== give && view.board[member].owner === seat));
 }
 /** What a swap does to `seat`: cash, net worth and any group it completes. */
 function SwapEffect({ view, seat, gain, give }: { view: TableView; seat: number; gain: number; give: number }) {
-  const delta = (board.spaces[gain].price ?? 0) - (board.spaces[give].price ?? 0) + board.rules.tradeBonus;
+  const delta = (spacesFor(view.theme)[gain].price ?? 0) - (spacesFor(view.theme)[give].price ?? 0) + board.rules.tradeBonus;
   // Public rent scales with how many publics one owner holds, so a public changing hands moves it.
-  const publics = board.spaces[gain].kind === 'public' || board.spaces[give]?.kind === 'public'
+  const publics = spacesFor(view.theme)[gain].kind === 'public' || spacesFor(view.theme)[give]?.kind === 'public'
     ? board.publics.filter(index => index === gain || (index !== give && view.board[index].owner === seat)).length : 0;
   return (
     <span className="effect">
       <span className="cash">cash +{money(board.rules.tradeBonus)}</span>, <span className="worth">net worth {delta >= 0 ? '+' : ''}{money(delta)}</span>
-      {completesGroup(view, seat, gain, give) && <b> Completes your {board.spaces[gain].group} group</b>}
-      {publics > 0 && <b> Your public properties would charge {money((board.spaces.find(item => item.kind === 'public')?.rent ?? 0) * publics)} each</b>}
+      {completesGroup(view, seat, gain, give) && <b> Completes your {spacesFor(view.theme)[gain].group} group</b>}
+      {publics > 0 && <b> Your public properties would charge {money((spacesFor(view.theme).find(item => item.kind === 'public')?.rent ?? 0) * publics)} each</b>}
     </span>
   );
 }
@@ -427,9 +452,9 @@ function TradeSheet({ view, seat, now, busy, onOpen, onOffer, onAccept, onPass }
   view: TableView; seat: number; now: number; busy: boolean;
   onOpen: (space: number) => void; onOffer: (space: number) => void; onAccept: (seat: number, space: number) => void; onPass: () => void;
 }) {
-  const lander = currentSeat(view), mine = board.spaces.filter(space => tradeable(view, seat, space.index)), bonus = money(board.rules.tradeBonus);
+  const lander = currentSeat(view), mine = spacesFor(view.theme).filter(space => tradeable(view, seat, space.index)), bonus = money(board.rules.tradeBonus);
   const offersLeft = Math.max(0, Math.ceil(view.trade.deadline - now)), decideLeft = Math.max(0, Math.ceil(view.stageDeadline - now));
-  const swatch = (index: number) => <i className="swatch" style={{ background: GROUP_COLORS[board.spaces[index].group ?? 'Public'] }} />;
+  const swatch = (index: number) => <i className="swatch" style={{ background: GROUP_COLORS[spacesFor(view.theme)[index].group ?? 'Public'] }} />;
   if (view.stage === 'tradeopen') {
     if (seat !== lander) return <section className="panel trade" data-testid="trade-sheet"><h2>Auction</h2><p className="quiet">{view.seats[lander].name} is choosing a property to put up for a swap.</p></section>;
     return (
@@ -447,13 +472,13 @@ function TradeSheet({ view, seat, now, busy, onOpen, onOffer, onAccept, onPass }
   const offers = tradeOffers(view), give = view.trade.space, offering = view.trade.offers[seat] ?? NO_OFFER;
   if (seat === lander) return (
     <section className="panel trade" data-testid="trade-sheet">
-      <h2>You put up {board.spaces[give].name}</h2>
+      <h2>You put up {spacesFor(view.theme)[give].name}</h2>
       <p className="quiet">{offersLeft ? `Offers close in ${offersLeft}s. You can take one now or wait for more.` : 'Offers are closed.'}{' '}
         {offers.length ? `Decide within ${decideLeft}s or the trade is cancelled with a strike.` : 'If nobody offers, the trade is cancelled with no strike.'}</p>
       <div className="offers">{offers.map(offer => (
         <div key={offer.seat} className="offer" style={{ borderColor: SEAT_COLORS[offer.seat] }}>
           <span>{view.seats[offer.seat].name} offers</span>
-          <b>{swatch(offer.space)}{board.spaces[offer.space].name}</b><small>{board.spaces[offer.space].group}, {money(board.spaces[offer.space].price ?? 0)}</small>
+          <b>{swatch(offer.space)}{spacesFor(view.theme)[offer.space].name}</b><small>{spacesFor(view.theme)[offer.space].group}, {money(spacesFor(view.theme)[offer.space].price ?? 0)}</small>
           <SwapEffect view={view} seat={seat} gain={offer.space} give={give} />
           <button className="btn primary" data-testid={`trade-accept-${offer.seat}`} disabled={busy} onClick={() => onAccept(offer.seat, offer.space)}>Swap</button>
         </div>))}
@@ -464,7 +489,7 @@ function TradeSheet({ view, seat, now, busy, onOpen, onOffer, onAccept, onPass }
   if (!isActive(view, seat)) return null;
   return (
     <section className="panel trade" data-testid="trade-sheet">
-      <h2>{view.seats[lander].name} puts up {board.spaces[give].name}</h2>
+      <h2>{view.seats[lander].name} puts up {spacesFor(view.theme)[give].name}</h2>
       {offersLeft ? <>
         <p className="quiet">Offer one of your properties without buildings. You can replace your offer until offers close in {offersLeft}s; an offer can’t be withdrawn.</p>
         {mine.length ? <div className="offers">{mine.map(space => (
@@ -472,59 +497,39 @@ function TradeSheet({ view, seat, now, busy, onOpen, onOffer, onAccept, onPass }
             <b>{swatch(space.index)}{space.name}</b><small>{offering === space.index ? 'Your offer' : offering !== NO_OFFER ? 'Offer this instead' : `Offer ${space.name}`}</small>
             <SwapEffect view={view} seat={seat} gain={give} give={space.index} /></button>))}</div>
           : <p className="quiet">You have no property without buildings to offer.</p>}
-      </> : <p className="quiet">Offers are closed. {view.seats[lander].name} is deciding{offering !== NO_OFFER ? ` on your ${board.spaces[offering].name}` : ''}.</p>}
+      </> : <p className="quiet">Offers are closed. {view.seats[lander].name} is deciding{offering !== NO_OFFER ? ` on your ${spacesFor(view.theme)[offering].name}` : ''}.</p>}
     </section>
   );
 }
 
-function Results({ view, me, openWallet }: { view: TableView; me: string; openWallet: () => void }) {
+function Results({ view, me }: { view: TableView; me: string }) {
+  // The on-chain ranking settles ties and eliminations; net worth is what players see.
   const settled = view.phase === 'free', payouts = settled ? view.seats.map(seat => seat.payout) : expectedPayouts(view).payouts;
   const ranked = view.seats.map((seat, index) => ({ seat, index, payout: payouts[index] })).sort((a, b) => b.payout - a.payout || netWorth(view, b.index) - netWorth(view, a.index));
-  const mine = ranked.find(item => item.seat.wallet === me);
   return (
     <section className="panel results" data-testid="results" data-settled={settled ? 'yes' : 'no'}>
-      <h2>{settled ? 'Paid out' : 'Game over, paying out…'}</h2>
+      <h2>Final standings</h2>
       <ol>{ranked.map((item, place) => (
         <li key={item.seat.wallet} data-testid={`result-${item.index}`} data-payout={item.payout}>
-          <span className="place">{place + 1}</span><span className="player-token" style={{ background: SEAT_COLORS[item.index] }}>{item.seat.name.slice(0, 1).toUpperCase()}</span>
+          <span className="place">{place + 1}</span><span className="player-token" style={{ background: SEAT_COLORS[item.index], color: SEAT_INK[item.index] }}>{item.seat.name.slice(0, 1).toUpperCase()}</span>
           <span className="result-name">{item.seat.name}{item.seat.wallet === me && <em> (you)</em>}
-            <small>{item.seat.eliminatedAt ? (item.seat.strikes >= board.rules.strikesToForfeit ? 'forfeited' : 'bankrupt') : `net worth ${money(netWorth(view, item.index))}`}</small></span>
-          <span className="mint">{usdc(item.payout)} USDC</span>
+            {item.seat.eliminatedAt > 0 && <small>{item.seat.strikes >= board.rules.strikesToForfeit ? 'forfeited' : 'bankrupt'}</small>}</span>
+          <span className="mint">{item.seat.eliminatedAt ? '' : money(netWorth(view, item.index))}</span>
         </li>))}</ol>
-      <p className="quiet">Payouts land in each play balance. The {PROTOCOL_FEE_BPS / 100}% fee and rounding dust go to the treasury.
-        {mine && mine.payout > 0 && mine.payout < WITHDRAW_MINIMUM ? ` Your ${usdc(mine.payout)} USDC is under the ${usdc(WITHDRAW_MINIMUM)} USDC withdraw minimum, so it stays in play for your next entry.`
-          : ` Withdrawals need at least ${usdc(WITHDRAW_MINIMUM)} USDC; smaller balances stay in play for your next entry.`}</p>
       <div className="actions">
-        {mine && mine.payout >= WITHDRAW_MINIMUM && <button className="btn" onClick={openWallet}>Withdraw winnings</button>}
         <button className="btn primary" data-testid="new-table" onClick={() => navigate('/')}>Play again</button>
       </div>
     </section>
   );
 }
 
-/** Refunding: a lobby that never started, a settle that deferred one unreachable seat, or the
- * emergency path after a settle kept failing. Each seat collects its own amount. */
-function Refunding({ view, seat, now, openWallet }: { view: TableView; seat: number; now: number; openWallet: () => void }) {
-  const done = view.seats.filter(item => item.refunded).length, mine = seat >= 0 ? view.seats[seat] : undefined;
-  const [reachable, setReachable] = useState<boolean>();
-  useEffect(() => {
-    if (!mine || mine.refunded) return;
-    let alive = true;
-    const check = () => void canReceive(mine.wallet).then(value => { if (alive) setReachable(value); }, () => {});
-    check(); const timer = setInterval(check, 10_000);
-    return () => { alive = false; clearInterval(timer); };
-  }, [mine?.wallet, mine?.refunded]);
-  const grace = Math.max(0, view.stageDeadline - now);
+/** The table is settling on-chain (a lobby that never started, or a finished game). Nothing to do but wait. */
+function Closing({ view }: { view: TableView }) {
+  const done = view.seats.filter(item => item.refunded).length;
   return (
     <section className="panel" data-testid="refunding">
-      <h2>{view.endedAt ? 'Paying out' : 'Refunding entries'}</h2>
-      <p>{view.endedAt ? `The game is over. ${done} of ${view.playerCount} players have their ranked share; the rest are sent as soon as each play balance can receive it.`
-        : `The game never started, so every entry comes back in full, with no fee. ${done} of ${view.playerCount} returned.`}</p>
-      {mine && !mine.refunded && reachable === false && <p className="error" data-testid="treasury-warning">
-        Your play balance can’t receive your {view.endedAt ? 'share' : 'entry'} right now. {grace > 0 ? `Reopen it within ${clock(grace)} by depositing any amount from your wallet, or it goes to the treasury.`
-          : 'The grace period is over, so it can now be sent to the treasury.'} <button className="linkish" onClick={openWallet}>Open wallet</button></p>}
-      {mine && !mine.refunded && reachable && <p className="quiet">Your {view.endedAt ? 'share' : 'entry'} is on its way to your play balance.</p>}
-      {mine?.refunded && <p className="mint">You have yours.</p>}
+      <h2>Closing the table</h2>
+      <p className="quiet">{view.endedAt ? 'The game is over.' : 'The game never started.'} Wrapping up {done} of {view.playerCount} seats…</p>
     </section>
   );
 }

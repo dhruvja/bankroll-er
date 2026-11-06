@@ -1,10 +1,11 @@
 import bs58 from 'bs58';
-import { Keypair, PublicKey } from '@solana/web3.js';
-import { ER_RPC, RELAY_FEE, TOKEN_SCALE, WITHDRAW_MINIMUM, invariant } from '../../../shared/config';
+import { Keypair, PublicKey, Transaction, sendAndConfirmTransaction } from '@solana/web3.js';
+import { createAssociatedTokenAccountIdempotentInstruction, createTransferInstruction } from '@solana/spl-token';
+import { DEVNET_USDC, ER_RPC, RELAY_FEE, invariant } from '../../../shared/config';
 import { BankrollClient, ProgramError, startCrank, type SentTransaction } from '../../../shared/client';
 import { SponsoredPayments } from '../../../shared/sponsored';
 import { depositForEntry } from '../../../shared/funding';
-import { PHASE_OFFSET, PROGRAM_ID, decodeTable, idl, type TableView } from '../../../shared/chain';
+import { PHASE_OFFSET, PROGRAM_ID, decodeTable, idl, tokenAddress, type TableView } from '../../../shared/chain';
 import { openWallet } from './wallet';
 
 export const client = new BankrollClient({ baseRpc: import.meta.env.VITE_BANKROLL_BASE_RPC });
@@ -12,56 +13,38 @@ const payments = new SponsoredPayments(client, localStorage);
 let walletPromise: Promise<Keypair> | undefined;
 export const wallet = () => walletPromise ??= openWallet().catch(error => { walletPromise = undefined; throw error; });
 
-export interface WalletInfo { address: string; play: number | null; base: number | null; sol: number | null; pending: boolean; status?: string }
-
 async function paymentLock<T>(owner: string, action: () => Promise<T>) {
-  invariant(navigator.locks, 'Use a current browser with Web Locks for sponsored USDC transfers.');
+  invariant(navigator.locks, 'Use a current browser to play.');
   return navigator.locks.request(`bankroll-payment-${owner}`, action);
 }
 
-export async function getWalletInfo(): Promise<WalletInfo> {
-  const keypair = await wallet(), address = keypair.publicKey.toBase58();
-  let status: string | undefined;
-  try {
-    if (payments.pending(address)) await navigator.locks.request(`bankroll-payment-${address}`, { ifAvailable: true }, async lock => {
-      if (lock) await payments.reconcile(keypair.publicKey, true);
-    });
-  } catch (error) { status = error instanceof Error ? error.message : 'Unable to check the pending transfer.'; }
-  const pending = payments.pending(address);
-  try {
-    const balances = await client.walletBalances(keypair.publicKey);
-    return { address, play: Number(balances.er) / TOKEN_SCALE, base: Number(balances.base) / TOKEN_SCALE, sol: balances.lamports / 1e9, pending,
-      status: status ?? (pending ? 'Sponsored transfer pending. Checking its saved receipt…' : undefined) };
-  } catch (error) {
-    return { address, play: null, base: null, sol: null, pending, status: status ?? (error instanceof Error ? error.message : 'Unable to read balances.') };
-  }
-}
+/** Devnet play-money faucet. Its key ships in the bundle on purpose, so anyone can drain it; keep it topped up. */
+const faucetSecret = import.meta.env.VITE_BANKROLL_FAUCET_SECRET as string | undefined;
+const faucet = faucetSecret ? Keypair.fromSecretKey(bs58.decode(faucetSecret)) : undefined;
 
-export async function deposit(amount?: number) {
-  const owner = await wallet();
-  return paymentLock(owner.publicKey.toBase58(), async () => {
-    const balances = await client.walletBalances(owner.publicKey);
-    const atoms = amount === undefined ? balances.base - BigInt(RELAY_FEE * 2) : BigInt(Math.round(amount * TOKEN_SCALE));
-    await payments.execute(owner, 'deposit', atoms);
-  });
-}
-
-export async function withdraw(amount: number) {
-  invariant(Number.isFinite(amount) && amount * TOKEN_SCALE >= WITHDRAW_MINIMUM && amount <= 1000, 'Enter between 0.50 and 1,000 USDC.');
-  const owner = await wallet();
-  return paymentLock(owner.publicKey.toBase58(), () => payments.execute(owner, 'withdraw', BigInt(Math.round(amount * TOKEN_SCALE))));
-}
-
-/** Moves base USDC into play when the entry needs it (sponsored, zero SOL). */
+/** Moves base USDC into play when the entry needs it (sponsored, zero SOL). A wallet without enough
+ * base USDC for that deposit and its two relay fees is first topped up from the faucet. */
 async function fundEntry(owner: Keypair, entry: number) {
   await paymentLock(owner.publicKey.toBase58(), async () => {
     invariant(!payments.pending(owner.publicKey.toBase58()), 'A sponsored transfer is still pending. Refresh your wallet first.');
-    const balances = await client.walletBalances(owner.publicKey);
-    if (balances.er < BigInt(entry)) await payments.execute(owner, 'deposit', depositForEntry(balances.base, balances.er, BigInt(entry)));
+    let balances = await client.walletBalances(owner.publicKey);
+    if (balances.er >= BigInt(entry)) return;
+    const shortfall = BigInt(entry) - balances.er, deposit = shortfall > 500_000n ? shortfall : 500_000n;
+    const needed = deposit + BigInt(RELAY_FEE * 2);
+    if (faucet && balances.base < needed) {
+      const mint = new PublicKey(DEVNET_USDC), to = tokenAddress(owner.publicKey);
+      const topUp = new Transaction().add(
+        createAssociatedTokenAccountIdempotentInstruction(faucet.publicKey, to, owner.publicKey, mint),
+        createTransferInstruction(tokenAddress(faucet.publicKey), to, faucet.publicKey, needed - balances.base));
+      try { await sendAndConfirmTransaction(client.base, topUp, [faucet]); }
+      catch { throw new Error('Bankroll can’t seat new players right now. Try again in a few minutes.'); }
+      balances = await client.walletBalances(owner.publicKey);
+    }
+    await payments.execute(owner, 'deposit', depositForEntry(balances.base, balances.er, BigInt(entry)));
   });
 }
 
-export async function openTable(options: { name: string; entry: number; maxPlayers: number; target: number }) {
+export async function openTable(options: { name: string; entry: number; maxPlayers: number; target: number; theme: number }) {
   const host = await wallet();
   await fundEntry(host, options.entry);
   for (const table of await client.findFreeTables()) {
@@ -149,9 +132,6 @@ export function watchTableTransactions(table: string, onTransaction: (transactio
     label: sentLabel(logs.signature), explorer: explorer(logs.signature) }), 'confirmed');
   return () => { void client.er.removeOnLogsListener(id).catch(() => {}); };
 }
-
-/** Whether `owner`'s play balance can receive a payout right now (mirrors the program's check). */
-export const canReceive = (owner: string) => client.payable(new PublicKey(owner));
 
 /** Plain-language versions of the program errors a player can hit. */
 const FRIENDLY: Record<string, string> = {

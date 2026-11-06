@@ -1,10 +1,20 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { board, isProperty } from '../../shared/board';
+import { spacesFor } from '../../shared/themes';
 import { NO_OWNER, rent, type TableView } from '../../shared/chain';
 
-export const SEAT_COLORS = ['#FF7A59', '#B794F6', '#FFD166', '#6EE7F0'];
+/** Bauhaus palette: seats are red, blue, yellow and black; each takes the ink in SEAT_INK on top. */
+export const SEAT_COLORS = ['#E03C28', '#1D4ED8', '#FFC21A', '#111111'];
+export const SEAT_INK = ['#FFFFFF', '#FFFFFF', '#111111', '#FFFFFF'];
+/** Each color group also has its own shape, so groups differ by more than hue. */
 export const GROUP_COLORS: Record<string, string> = {
-  Brown: '#B07A4F', Sky: '#69C3F0', Pink: '#F28AB2', Orange: '#F59A3B', Green: '#3BAA72', Gold: '#E8C547', Public: '#8FA3BD',
+  Brown: '#8B5A2B', Sky: '#1D4ED8', Pink: '#E86AA6', Orange: '#F07C1A', Green: '#1F8A4C', Gold: '#FFC21A', Public: '#111111',
+};
+export const GROUP_INK: Record<string, string> = {
+  Brown: '#FFFFFF', Sky: '#FFFFFF', Pink: '#111111', Orange: '#111111', Green: '#FFFFFF', Gold: '#111111', Public: '#FFFFFF',
+};
+const GROUP_SHAPES: Record<string, string> = {
+  Brown: 'square', Sky: 'circle', Pink: 'half', Orange: 'triangle', Green: 'quarter', Gold: 'circle', Public: 'stripes',
 };
 export const money = (value: number) => `${value < 0 ? '−' : ''}$${Math.abs(value).toLocaleString('en-US')}`;
 
@@ -18,7 +28,12 @@ export function ringCell(index: number): [number, number] {
   return [1 + (index - 18), 7];
 }
 
-const SHORT: Record<string, string> = { 'Lucky Card': 'Lucky', 'Power Plant': 'Power', 'New York': 'New York' };
+/** Cell labels: short forms, and soft hyphens (\u00AD) so long area names wrap as KORA-MANGALA, never mid-letter. */
+const SHORT: Record<string, string> = {
+  'Lucky Card': 'Lucky', 'Power Plant': 'Power', 'New York': 'New York',
+  Malleshwaram: 'Malle\u00ADshwaram', Koramangala: 'Kora\u00ADmangala', Indiranagar: 'Indira\u00ADnagar', Jayanagar: 'Jaya\u00ADnagar',
+  Yelahanka: 'Yela\u00ADhanka', Bellandur: 'Bellan\u00ADdur', Whitefield: 'White\u00ADfield', Ghatkopar: 'Ghat\u00ADkopar', Borivali: 'Bori\u00ADvali',
+};
 
 export type Highlight = 'give' | 'offer';
 
@@ -30,19 +45,20 @@ export function Board({ view, positions, highlights, selected, onSelect, childre
   const live = view.phase !== 'lobby';
   return (
     <div className="ring-wrap"><div className="ring" data-testid="board">
-      {board.spaces.map(space => {
+      {spacesFor(view.theme).map(space => {
         const [row, column] = ringCell(space.index), lot = view.board[space.index], owned = live && lot.owner !== NO_OWNER;
         const mark = highlights.get(space.index);
         const style = { gridRow: row, gridColumn: column, '--group': space.group ? GROUP_COLORS[space.group] : 'transparent',
-          '--owner': owned ? SEAT_COLORS[lot.owner] : 'transparent', '--mark': mark ? SEAT_COLORS[mark.seat] : 'transparent' } as CSSProperties;
+          '--group-ink': space.group ? GROUP_INK[space.group] : 'inherit', '--owner': owned ? SEAT_COLORS[lot.owner] : 'transparent',
+          '--owner-ink': owned ? SEAT_INK[lot.owner] : 'inherit', '--mark': mark ? SEAT_COLORS[mark.seat] : 'transparent' } as CSSProperties;
         const name = SHORT[space.name] ?? space.name;
         return (
           <button key={space.index} type="button" style={style} data-testid={`space-${space.index}`} data-owner={owned ? lot.owner : ''}
-            className={`cell ${space.kind}${owned ? ' owned' : ''}${mark ? ` mark-${mark.kind}` : ''}${selected === space.index ? ' selected' : ''}`}
+            className={`cell ${space.kind}${owned ? ' owned' : ''}${live && lot.buildings > 0 ? ' built' : ''}${mark ? ` mark-${mark.kind}` : ''}${selected === space.index ? ' selected' : ''}`}
             onClick={() => onSelect(space.index)} aria-label={`${space.name}${owned ? `, owned by ${view.seats[lot.owner]?.name}` : ''}`}>
-            {isProperty(space) && <span className="band" />}
+            {isProperty(space) && <span className="cell-price" title={owned ? 'Rent' : 'Price'}>{owned ? money(rent(view, space.index)) : money(space.price ?? 0)}</span>}
+            {isProperty(space) && <span className={`shape ${GROUP_SHAPES[space.group ?? 'Public']}`} aria-hidden="true" />}
             <span className="cell-name">{name}</span>
-            {isProperty(space) && <span className="cell-price">{owned ? money(rent(view, space.index)) : money(space.price ?? 0)}</span>}
             {lot.buildings > 0 && live && <span className="pips" aria-label={`${lot.buildings} buildings`}>{Array.from({ length: lot.buildings }, (_, i) => <i key={i} />)}</span>}
             {space.kind === 'start' && <span className="cell-note">+{money(board.rules.salary)}</span>}
           </button>
@@ -52,7 +68,8 @@ export function Board({ view, positions, highlights, selected, onSelect, childre
         if (seat.eliminatedAt) return null;
         const [row, column] = ringCell(positions[index] ?? seat.position);
         const stack = view.seats.filter((other, at) => !other.eliminatedAt && (positions[at] ?? other.position) === (positions[index] ?? seat.position)).indexOf(seat);
-        const style = { '--row': row - 1, '--col': column - 1, '--stack': stack, background: SEAT_COLORS[index] } as CSSProperties;
+        const corner = (positions[index] ?? seat.position) % 6 === 0 ? 1 : 0;
+        const style = { '--row': row - 1, '--col': column - 1, '--stack': stack, '--corner': corner, background: SEAT_COLORS[index], color: SEAT_INK[index] } as CSSProperties;
         return <span key={seat.wallet} className="token" style={style} data-testid={`token-${index}`} title={seat.name}>{seat.name.slice(0, 1).toUpperCase()}</span>;
       })}
       <div className="rosette">{children}</div>
