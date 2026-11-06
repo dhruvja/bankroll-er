@@ -33,19 +33,19 @@ export default function App() {
   const openWalletSheet = () => setWalletOpen(true);
   return (
     <>
-      <header className="topbar">
+      <header className={`topbar${match ? ' on-table' : ''}`}>
         <a className="wordmark" href={home} onClick={event => { event.preventDefault(); navigate(home); }}>Bankroll{demo && <span className="demo-tag">Demo</span>}</a>
         {!demo && <button className="wallet-chip" data-testid="wallet-button" onClick={openWalletSheet}>
           <span className="chip-label">Play balance</span>
           <span className="chip-value" data-testid="wallet-play-chip">{info?.play === null || info?.play === undefined ? '…' : `${info.play.toFixed(2)} USDC`}</span>
         </button>}
       </header>
-      <main>
+      <main className={match ? 'on-table' : undefined}>
         {match && signer ? <TableScreen key={path} demo={demo} table={match[1]} nonce={Number(match[2])} me={signer.publicKey.toBase58()} signer={signer} refresh={refresh} openWallet={openWalletSheet} />
           : match ? <p className="center-note">Getting your seat ready…</p> : <Home demo={demo} info={info} refresh={refresh} openWallet={openWalletSheet} />}
       </main>
       {walletOpen && !demo && <WalletSheet info={info} signer={signer} refresh={refresh} onClose={() => setWalletOpen(false)} />}
-      <footer className="footer">{demo ? 'Free demo: play money only.' : 'Devnet test USDC only.'} Every table, roll and move runs live on a MagicBlock ephemeral rollup; there is no game server.</footer>
+      <footer className={`footer${match ? ' on-table' : ''}`}>{demo ? 'Free demo: play money only.' : 'Devnet test USDC only.'} Every table, roll and move runs live on a MagicBlock ephemeral rollup; there is no game server.</footer>
     </>
   );
 }

@@ -125,12 +125,13 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
   const { view, connected, readError } = useTable(table);
   const { busy, error, run } = useBusy(), now = useNow();
   const [selected, setSelected] = useState<number>(), [requested, setRequested] = useState(false), [name, setName] = useState('');
+  const [inviteOpen, setInviteOpen] = useState(false);
   const seat = view ? view.seats.findIndex(item => item.wallet === me) : -1, current = view && nonce === view.gameNonce;
   const feed = useFeed(current ? view : undefined, `bankroll.feed.${table}.${nonce}`);
   const card = useDrawnCard(current ? view : undefined);
   const die = useDie(current ? view : undefined, requested);
   const positions = useTokenPositions(current ? view : undefined, die.settleAt);
-  const prefix = demo ? '/demo' : '', home = demo ? '/demo' : '/';
+  const prefix = demo ? '/demo' : '', home = demo ? '/demo' : '/', invite = `${location.origin}${prefix}/play/${table}/${nonce}`;
   useEffect(() => (current && seat >= 0 ? runCrank(table, signer) : undefined), [table, signer, current, seat]);
   useEffect(() => { if (!demo && (view?.phase === 'free' || view?.phase === 'finished')) refresh(); }, [demo, view?.phase, refresh]);
   useEffect(() => {
@@ -180,11 +181,17 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
     <div className="table-screen" data-testid="table" data-phase={view.phase} data-stage={view.stage} data-my-seat={seat} data-turn-seat={turnSeat}
       data-my-turn={myTurn ? 'yes' : 'no'} data-lander={turnSeat} data-nonce={view.gameNonce} data-busy={busy ? 'yes' : 'no'}>
       <div className="table-head">
-        <h1>Table {view.index + 1}</h1>
-        <p>{demo ? '' : `${usdc(view.entry)} USDC entry, ${usdc(view.entry * view.playerCount)} pot, `}{THEMES[view.theme]?.name ?? 'Classic'} board, first to {money(view.target)} net worth</p>
+        <a className="head-home" href={home} onClick={event => { event.preventDefault(); navigate(home); }} aria-label="Back to the tables">←</a>
+        <div className="head-title">
+          <h1>Table {view.index + 1}</h1>
+          <p>{demo ? '' : `${usdc(view.entry)} USDC entry, ${usdc(view.entry * view.playerCount)} pot, `}{THEMES[view.theme]?.name ?? 'Classic'} board, first to {money(view.target)} net worth</p>
+        </div>
         <SoundToggle />
         <span className={`link-state${connected ? '' : ' offline'}`} data-testid="connection">{connected ? 'Live' : 'Reconnecting…'}</span>
+        {!demo && <button type="button" className="head-btn" onClick={openWallet}>Wallet</button>}
+        <button type="button" className="head-btn invite-btn" data-testid="invite-open" onClick={() => setInviteOpen(true)}>Invite</button>
       </div>
+      {inviteOpen && <InviteSheet invite={invite} onClose={() => setInviteOpen(false)} />}
       {tradeAlert && <div className="alert" role="status" data-testid="trade-alert">
         {view.stage === 'tradeopen' ? `${view.seats[turnSeat].name} landed on Auction and is picking a property to trade.`
           : `${view.seats[turnSeat].name} puts ${spacesFor(view.theme)[view.trade.space].name} up for a swap. Make an offer within ${Math.max(0, Math.ceil(view.trade.deadline - now))}s.`}
@@ -196,7 +203,7 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
         <div className="board-col">
           <SeatStrip view={view} me={me} seats={[0, 1]} />
           <Board view={view} positions={positions} highlights={highlights} selected={selected} onSelect={space => setSelected(space === selected ? undefined : space)}>
-            <Center view={view} seat={seat} myTurn={myTurn} left={left} now={now} busy={busy} die={die} card={card} timedOut={timedOut} demo={demo}
+            <Center view={view} seat={seat} myTurn={myTurn} left={left} now={now} busy={busy} die={die} card={card} timedOut={timedOut} demo={demo} home={home}
               onRoll={action('roll')} onBail={action('bail')} onStart={action('start')} onCancel={action('cancel')} onBuy={action('buy')} onPass={action('pass')} />
           </Board>
           <SeatStrip view={view} me={me} seats={[2, 3]} />
@@ -204,38 +211,39 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
 
         <div className="side">
           <Players view={view} me={me} />
-          {error && <p className="error" role="alert" data-testid="error">{error}</p>}
+          {error && <p className="error pop" role="alert" data-testid="error">{error}</p>}
 
-          {view.phase === 'lobby' && <Lobby view={view} seat={seat} table={table} nonce={nonce} name={name} setName={setName} busy={busy} demo={demo} openWallet={openWallet}
+          {view.phase === 'lobby' && seat < 0 && view.playerCount < view.maxPlayers && <JoinForm view={view} name={name} setName={setName} busy={busy} demo={demo} openWallet={openWallet}
             onJoin={() => void run(async () => { await joinTable(table, nonce, name.trim(), view.entry); if (!demo) refresh(); })} />}
+          {view.phase === 'lobby' && <section className="panel invite"><h2>Invite friends</h2><InviteBody invite={invite} size={132} /></section>}
 
           {view.phase === 'playing' && view.stage === 'buydecision' && <PropertyCard view={view} space={view.seats[turnSeat].position} seat={seat}
             heading={myTurn ? 'Buy this property?' : `${view.seats[turnSeat].name} is deciding`} />}
 
-          {view.phase === 'playing' && (view.stage === 'tradeopen' || view.stage === 'tradeoffers') && seat >= 0 && (
+          {view.phase === 'playing' && (view.stage === 'tradeopen' || view.stage === 'tradeoffers') && seat >= 0 && <div className="pop">
             <TradeSheet view={view} seat={seat} now={now} busy={busy}
               onOpen={space => void run(() => trade(table, 'open', space))} onOffer={space => void run(() => trade(table, 'offer', space))}
               onAccept={(from, space) => void run(() => acceptTrade(table, from, space))} onPass={action('pass')} />
-          )}
+          </div>}
 
-          {myTurn && mine && mine.cash < 0 && <p className="error">You are {money(mine.cash)} in debt. Sell a property before you can buy, build or pay bail.
+          {myTurn && mine && mine.cash < 0 && <p className="error pop">You are {money(mine.cash)} in debt. Sell a property before you can buy, build or pay bail.
             Below {money(board.rules.bankruptCashBelow)}, or at a net worth of $0, you are bankrupt.</p>}
 
-          {selected !== undefined && view.phase === 'playing' && <PropertyCard view={view} space={selected} seat={seat} heading="Property" onClose={() => setSelected(undefined)}>
+          {selected !== undefined && view.phase === 'playing' && <div className="pop"><PropertyCard view={view} space={selected} seat={seat} heading="Property" onClose={() => setSelected(undefined)}>
             {myTurn && view.board[selected].owner === seat && (view.stage === 'preroll' || view.stage === 'buydecision') && <div className="actions">
               {view.stage === 'preroll' && spacesFor(view.theme)[selected].kind === 'city' && <button className="btn" data-testid="card-build" disabled={busy || !canBuild(view, seat, selected)}
                 onClick={() => void run(() => property(table, 'build', selected))}>Build for {money(spacesFor(view.theme)[selected].buildingCost ?? 0)}</button>}
               <button className="btn" data-testid="card-sell" disabled={busy} onClick={() => void run(async () => { await property(table, 'sell', selected); setSelected(undefined); })}>
                 Sell for {money(saleValue(view, selected))}</button>
             </div>}
-          </PropertyCard>}
+          </PropertyCard></div>}
 
           {view.phase === 'playing' && seat >= 0 && <Holdings view={view} seat={seat} buildNow={myTurn && view.stage === 'preroll'} onSelect={setSelected} />}
           {(view.phase === 'finished' || view.phase === 'free' && view.endedAt > 0) && <Results view={view} me={me} demo={demo} home={home} openWallet={openWallet} />}
           {view.phase === 'free' && !view.endedAt && <section className="panel" data-testid="refunded"><h2>{demo ? 'Table closed' : 'Entries refunded'}</h2>
             <p className="quiet">{demo ? 'The game never started.' : 'The game never started, so every entry went back to its play balance with no fee.'}</p>
             <button className="btn primary" onClick={() => navigate(home)}>Back to the tables</button></section>}
-          {view.phase === 'refunding' && (demo ? <Closing view={view} /> : <Refunding view={view} seat={seat} now={now} openWallet={openWallet} />)}
+          {view.phase === 'refunding' && (demo ? <Closing view={view} /> : <div className="pop"><Refunding view={view} seat={seat} now={now} openWallet={openWallet} /></div>)}
           <Feed feed={feed} />
           <TxLog table={table} since={view.lobbyDeadline - LOBBY_SECONDS} />
         </div>
@@ -246,12 +254,12 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
 
 function SoundToggle() {
   const [muted, toggle] = useSoundToggle();
-  return <button type="button" className={`sound-toggle${muted ? ' off' : ''}`} data-testid="sound-toggle" aria-pressed={!muted} onClick={toggle}>{muted ? 'Sound off' : 'Sound on'}</button>;
+  return <button type="button" className={`sound-toggle${muted ? ' off' : ''}`} data-testid="sound-toggle" aria-pressed={!muted} aria-label={muted ? 'Sound off' : 'Sound on'} onClick={toggle}><span className="label">{muted ? 'Sound off' : 'Sound on'}</span></button>;
 }
 
-function Center({ view, seat, myTurn, left, now, busy, die, card, timedOut, demo, onRoll, onBail, onStart, onCancel, onBuy, onPass }: {
+function Center({ view, seat, myTurn, left, now, busy, die, card, timedOut, demo, home, onRoll, onBail, onStart, onCancel, onBuy, onPass }: {
   view: TableView; seat: number; myTurn: boolean; left: number; now: number; busy: boolean; die: { face: number; tumbling: boolean };
-  card?: { seat: number; card: number }; timedOut: boolean; demo: boolean; onRoll: () => void; onBail: () => void; onStart: () => void; onCancel: () => void;
+  card?: { seat: number; card: number }; timedOut: boolean; demo: boolean; home: string; onRoll: () => void; onBail: () => void; onStart: () => void; onCancel: () => void;
   onBuy: () => void; onPass: () => void;
 }) {
   const turnSeat = currentSeat(view), who = view.seats[turnSeat];
@@ -268,7 +276,8 @@ function Center({ view, seat, myTurn, left, now, busy, die, card, timedOut, demo
   );
   if (view.phase !== 'playing') {
     // Only a game that ended has a ranking; a refunded lobby may have a single seat.
-    if (!view.endedAt) return <div className="center-stack"><p className="big">No game</p><p className="quiet">{demo ? 'The game never started.' : 'The game never started, so every entry comes back in full.'}</p></div>;
+    if (!view.endedAt) return <div className="center-stack"><p className="big">No game</p><p className="quiet">{demo ? 'The game never started.' : 'The game never started, so every entry comes back in full.'}</p>
+      <button className="btn" onClick={() => navigate(home)}>Back to the tables</button></div>;
     const payouts = view.phase === 'free' ? view.seats.map(item => item.payout) : expectedPayouts(view).payouts;
     const ranked = view.seats.map((item, index) => ({ item, payout: payouts[index] })).sort((a, b) => b.payout - a.payout);
     return (
@@ -276,6 +285,7 @@ function Center({ view, seat, myTurn, left, now, busy, die, card, timedOut, demo
         <p className="quiet">Game over</p>
         <p className="big" data-testid="winner">{ranked[0].item.name} wins</p>
         <p className="mint">{demo ? money(netWorth(view, view.seats.indexOf(ranked[0].item))) : `${usdc(ranked[0].payout)} USDC`}</p>
+        <button className="btn primary" onClick={() => navigate(home)}>Play again</button>
       </div>
     );
   }
@@ -375,27 +385,42 @@ function Players({ view, me }: { view: TableView; me: string }) {
   );
 }
 
-function Lobby({ view, seat, table, nonce, name, setName, busy, demo, openWallet, onJoin }: {
-  view: TableView; seat: number; table: string; nonce: number; name: string; setName: (value: string) => void; busy: boolean;
-  demo: boolean; openWallet: () => void; onJoin: () => void;
+function JoinForm({ view, name, setName, busy, demo, openWallet, onJoin }: {
+  view: TableView; name: string; setName: (value: string) => void; busy: boolean; demo: boolean; openWallet: () => void; onJoin: () => void;
 }) {
-  const invite = `${location.origin}${demo ? '/demo' : ''}/play/${table}/${nonce}`, [copied, setCopied] = useState(false);
+  return (
+    <form className="panel join pop" onSubmit={event => { event.preventDefault(); if (name.trim()) onJoin(); }}>
+      <h2>Join this table</h2>
+      <label>Your name<input data-testid="join-name" required maxLength={16} value={name} onChange={event => setName(event.target.value)} /></label>
+      <button className="btn primary" data-testid="join-submit" disabled={busy || !name.trim()}>{busy ? 'Joining…' : demo ? 'Join table' : `Join for ${usdc(view.entry)} USDC`}</button>
+      {!demo && <p className="quiet">If your play balance is short, this first moves USDC in from your wallet (0.20 USDC fee, no SOL). <button type="button" className="linkish" onClick={openWallet}>Open wallet</button></p>}
+    </form>
+  );
+}
+
+function InviteBody({ invite, size }: { invite: string; size: number }) {
+  const [copied, setCopied] = useState(false);
   const copy = () => void navigator.clipboard?.writeText(invite).then(() => { setCopied(true); setTimeout(() => setCopied(false), 1500); });
   return (
-    <section className="panel invite">
-      {seat < 0 && view.playerCount < view.maxPlayers && <form className="join" onSubmit={event => { event.preventDefault(); if (name.trim()) onJoin(); }}>
-        <h2>Join this table</h2>
-        <label>Your name<input data-testid="join-name" required maxLength={16} value={name} onChange={event => setName(event.target.value)} /></label>
-        <button className="btn primary" data-testid="join-submit" disabled={busy || !name.trim()}>{busy ? 'Joining…' : demo ? 'Join table' : `Join for ${usdc(view.entry)} USDC`}</button>
-        {!demo && <p className="quiet">If your play balance is short, this first moves USDC in from your wallet (0.20 USDC fee, no SOL). <button type="button" className="linkish" onClick={openWallet}>Open wallet</button></p>}
-      </form>}
-      <h2>Invite friends</h2>
-      <div className="qr"><QRCodeSVG value={invite} size={132} bgColor="#FFFFFF" fgColor="#111111" level="M" title="Scan to join this table" /></div>
+    <>
+      <div className="qr"><QRCodeSVG value={invite} size={size} bgColor="#FFFFFF" fgColor="#111111" level="M" title="Scan to join this table" /></div>
       <input className="invite-url" data-testid="invite-link" readOnly value={invite} onFocus={event => event.currentTarget.select()} aria-label="Invite link" />
       <div className="actions">
         <button className="btn" onClick={copy}>{copied ? 'Copied' : 'Copy link'}</button>
         {'share' in navigator && <button className="btn ghost" onClick={() => void navigator.share({ title: 'Bankroll', url: invite }).catch(() => {})}>Share</button>}
       </div>
+    </>
+  );
+}
+
+/** Phones: the invite gets its own full-screen page instead of a side panel. */
+function InviteSheet({ invite, onClose }: { invite: string; onClose: () => void }) {
+  useEffect(() => { const close = (event: KeyboardEvent) => { if (event.key === 'Escape') onClose(); }; addEventListener('keydown', close); return () => removeEventListener('keydown', close); }, [onClose]);
+  return (
+    <section className="invite-sheet" role="dialog" aria-modal="true" aria-labelledby="invite-title" data-testid="invite-sheet">
+      <header><h2 id="invite-title">Invite friends</h2><button className="close" onClick={onClose} aria-label="Close invite">×</button></header>
+      <p className="quiet">Friends scan this or open the link to take a seat.</p>
+      <InviteBody invite={invite} size={240} />
     </section>
   );
 }

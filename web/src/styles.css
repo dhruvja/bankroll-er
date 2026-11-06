@@ -113,6 +113,18 @@ legend { font-weight: 800; font-stretch: 75%; text-transform: uppercase; margin-
 .table-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; padding: 0 0 12px; }
 .table-head h1 { font-size: 2.2rem; margin: 0; }
 .table-head p { color: var(--mid); margin: 0; font-weight: 600; }
+.head-title { display: contents; }
+.head-home, .head-btn { display: none; }
+.head-btn { background: var(--ink); color: var(--white); border: 0; padding: 6px 12px; cursor: pointer; font-weight: 900; font-stretch: 75%; text-transform: uppercase; font-size: 1rem; }
+.invite-btn { background: var(--red); }
+.invite-sheet { position: fixed; inset: 0; z-index: 60; background: var(--paper); overflow-y: auto; padding: 18px 20px 28px; display: flex; flex-direction: column; align-items: center; gap: 12px; }
+.invite-sheet header { position: relative; align-self: stretch; border-bottom: var(--rule) solid var(--ink); padding-bottom: 8px; }
+.invite-sheet h2 { margin: 0; font-size: 2rem; }
+.invite-sheet .close { top: 0; right: 0; font-size: 2.2rem; }
+.invite-sheet .quiet { align-self: stretch; margin: 0; }
+.invite-sheet .qr { background: var(--white); padding: 14px; border: var(--rule) solid var(--ink); }
+.invite-sheet .actions { display: flex; gap: 10px; align-self: stretch; }
+.invite-sheet .actions .btn { flex: 1; }
 .sound-toggle { margin-left: auto; background: none; border: 2px solid var(--ink); padding: 2px 8px; cursor: pointer; font-size: .72rem; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
 .sound-toggle::before { content: ''; display: inline-block; width: 0; height: 0; margin-right: 6px; border: 5px solid transparent; border-right-color: currentColor; border-left-width: 0; vertical-align: -1px; }
 .sound-toggle.off { color: var(--mid); border-color: var(--mid); text-decoration: line-through; }
@@ -227,6 +239,29 @@ legend { font-weight: 800; font-stretch: 75%; text-transform: uppercase; margin-
 @media (max-width: 979px) {
   .seat-strip { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 40px; }
   .side .players { display: none; }
+  /* Phones: the table is only the board. A slim bar on top, everything you act on pops up from the bottom. */
+  .topbar.on-table, .footer.on-table { display: none; }
+  main.on-table { padding: 0 8px; }
+  main.on-table .table-screen { min-height: 100dvh; display: flex; flex-direction: column; }
+  main.on-table .table-grid { flex: 1; align-content: center; padding-bottom: 8px; }
+  .table-head { flex-wrap: nowrap; align-items: center; gap: 8px; padding: 8px 0 6px; }
+  .head-home { display: block; font-size: 1.6rem; font-weight: 900; text-decoration: none; line-height: 1; padding: 0 4px; }
+  .head-title { display: block; min-width: 0; flex: 1; }
+  .table-head h1 { font-size: 1.4rem; line-height: 1; }
+  .table-head p { font-size: .7rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .head-btn { display: block; flex: none; }
+  .sound-toggle { margin-left: 0; padding: 6px 8px; flex: none; }
+  .sound-toggle .label, .link-state { font-size: 0; }
+  .sound-toggle::before { margin-right: 0; }
+  .link-state::before { margin-right: 0; }
+  main.on-table .alert { padding: 6px 10px; margin-bottom: 6px; font-size: .85rem; }
+  .table-grid { gap: 0; }
+  .board-col { gap: 6px; }
+  .board-col .ring-wrap { width: min(100%, calc(100dvh - 150px)); margin: 0 auto; }
+  .side { position: fixed; left: 8px; right: 8px; bottom: 8px; z-index: 40; display: flex; flex-direction: column; gap: 8px; max-height: 70dvh; overflow-y: auto; pointer-events: none; }
+  .side > :not(.pop) { display: none; }
+  .side > .pop { pointer-events: auto; margin: 0; box-shadow: 6px 6px 0 var(--ink); }
+  .side > .pop > .panel { margin: 0; }
 }
 
 .players { padding: 4px 14px; }
@@ -252,7 +287,6 @@ legend { font-weight: 800; font-stretch: 75%; text-transform: uppercase; margin-
 
 .invite .qr { background: var(--white); padding: 10px; border: var(--rule) solid var(--ink); width: max-content; margin: 6px 0 10px; }
 .invite-url { font-size: .8rem; }
-.join { padding-bottom: 14px; margin-bottom: 14px; border-bottom: var(--rule) solid var(--ink); }
 .join label { display: block; font-weight: 700; margin: 8px 0; }
 
 .deed { padding: 0; overflow: hidden; }
