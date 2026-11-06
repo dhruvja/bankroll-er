@@ -281,11 +281,11 @@
     24
   ],
   "rules": {
-    "startCash": 1000,
+    "startCash": 1500,
     "seatBonusStepByTarget": {
-      "1800": 40,
-      "3500": 40,
-      "4500": 40
+      "2500": 40,
+      "5000": 75,
+      "7000": 100
     },
     "salary": 200,
     "jailSpace": 7,
@@ -293,26 +293,26 @@
     "bail": 150,
     "tradeBonus": 100,
     "saleBps": 8000,
-    "bankruptCashBelow": -200,
+    "bankruptCashBelow": -500,
     "maxBuildingsPerCity": 5,
     "maxRollsPerTurn": 3,
-    "groupRentMultiplier": 3,
+    "groupRentMultiplier": 2,
     "buildingRentMultipliers": [
       4,
-      7,
-      11,
-      16,
-      22
+      12,
+      30,
+      40,
+      50
     ],
     "targets": [
-      1800,
-      3500,
-      4500
+      2500,
+      5000,
+      7000
     ],
     "defaultTargetByPlayers": {
-      "2": 1800,
-      "3": 3500,
-      "4": 4500
+      "2": 2500,
+      "3": 5000,
+      "4": 7000
     },
     "cardMoveOntoLuckyDrawsAgain": false,
     "deadlinesSec": {
@@ -331,8 +331,8 @@
     {
       "id": 1,
       "kind": "bank",
-      "amount": 150,
-      "text": "Collect $150 from the bank."
+      "amount": 200,
+      "text": "Bank error in your favor: collect $200."
     },
     {
       "id": 2,
@@ -343,32 +343,32 @@
     {
       "id": 3,
       "kind": "bank",
-      "amount": 200,
-      "text": "Collect $200."
+      "amount": 50,
+      "text": "Collect $50."
     },
     {
       "id": 4,
+      "kind": "bank",
+      "amount": -100,
+      "text": "Pay $100 to the bank."
+    },
+    {
+      "id": 5,
       "kind": "bank",
       "amount": -50,
       "text": "Pay $50 to the bank."
     },
     {
-      "id": 5,
-      "kind": "bank",
-      "amount": -25,
-      "text": "Pay $25 to the bank."
-    },
-    {
       "id": 6,
       "kind": "pay_each",
-      "amount": 25,
-      "text": "Pay each other active player $25."
+      "amount": 50,
+      "text": "Pay each other active player $50."
     },
     {
       "id": 7,
       "kind": "collect_each",
-      "amount": 25,
-      "text": "Collect $25 from each other active player."
+      "amount": 10,
+      "text": "Collect $10 from each other active player."
     },
     {
       "id": 8,

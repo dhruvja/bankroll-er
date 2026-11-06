@@ -4,9 +4,9 @@ use crate::state::{LuckyCard, LuckyKind, SpaceKind, SpaceSpec};
 pub const SPACES: usize = 28;
 pub const PUBLIC_GROUP: u8 = 9;
 pub const GROUP_SIZES: [u8; 10] = [0, 2, 3, 2, 3, 2, 3, 2, 3, 4];
-pub const START_CASH: i64 = 1000;
+pub const START_CASH: i64 = 1500;
 pub const SALARY: i64 = 200;
-pub const BANKRUPT_CASH_BELOW: i64 = -200;
+pub const BANKRUPT_CASH_BELOW: i64 = -500;
 pub const MAX_ROLLS_PER_TURN: u8 = 3;
 pub const JAIL_SPACE: usize = 7;
 pub const JAIL_TURNS: u8 = 3;
@@ -14,10 +14,10 @@ pub const BAIL: i64 = 150;
 pub const TRADE_BONUS: i64 = 100;
 pub const SALE_BPS: i64 = 8000;
 pub const MAX_BUILDINGS: u8 = 5;
-pub const GROUP_RENT_MULTIPLIER: i64 = 3;
-pub const BUILDING_RENT_MULTIPLIERS: [i64; 5] = [4, 7, 11, 16, 22];
-pub const TARGETS: [u64; 3] = [1800, 3500, 4500];
-pub const SEAT_BONUS_STEPS: [i64; 3] = [40, 40, 40];
+pub const GROUP_RENT_MULTIPLIER: i64 = 2;
+pub const BUILDING_RENT_MULTIPLIERS: [i64; 5] = [4, 12, 30, 40, 50];
+pub const TARGETS: [u64; 3] = [2500, 5000, 7000];
+pub const SEAT_BONUS_STEPS: [i64; 3] = [40, 75, 100];
 pub const PREROLL_SECONDS: i64 = 30;
 pub const BUY_SECONDS: i64 = 20;
 pub const TRADE_OPEN_SECONDS: i64 = 20;
@@ -60,13 +60,13 @@ pub const BOARD: [SpaceSpec; SPACES] = [
 ];
 
 pub const LUCKY_DECK: [LuckyCard; 12] = [
-    LuckyCard { kind: LuckyKind::Bank, amount: 150 },
-    LuckyCard { kind: LuckyKind::Bank, amount: 100 },
     LuckyCard { kind: LuckyKind::Bank, amount: 200 },
+    LuckyCard { kind: LuckyKind::Bank, amount: 100 },
+    LuckyCard { kind: LuckyKind::Bank, amount: 50 },
+    LuckyCard { kind: LuckyKind::Bank, amount: -100 },
     LuckyCard { kind: LuckyKind::Bank, amount: -50 },
-    LuckyCard { kind: LuckyKind::Bank, amount: -25 },
-    LuckyCard { kind: LuckyKind::PayEach, amount: 25 },
-    LuckyCard { kind: LuckyKind::CollectEach, amount: 25 },
+    LuckyCard { kind: LuckyKind::PayEach, amount: 50 },
+    LuckyCard { kind: LuckyKind::CollectEach, amount: 10 },
     LuckyCard { kind: LuckyKind::ToStart, amount: 0 },
     LuckyCard { kind: LuckyKind::ToJail, amount: 0 },
     LuckyCard { kind: LuckyKind::Move, amount: 3 },
