@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import type { Keypair } from '@solana/web3.js';
 import { QRCodeSVG } from 'qrcode.react';
 import { board, isProperty } from '../../shared/board';
@@ -6,7 +6,7 @@ import { PROTOCOL_FEE_BPS, TOKEN_SCALE, WITHDRAW_MINIMUM } from '../../shared/co
 import { THEMES, spacesFor } from '../../shared/themes';
 import { NO_OFFER, NO_OWNER, canBuild, currentSeat, expectedPayouts, isActive, netWorth, rent, saleValue, tradeOffers, tradeable, type TableView } from '../../shared/chain';
 import { acceptTrade, act, canReceive, client, friendlyError, joinTable, property, runCrank, subscribeTable, tableTransactions, trade, watchTableTransactions, type TableTransaction } from './lib/game';
-import { useSoundToggle } from './sound';
+import { sounds, useSoundToggle } from './sound';
 import { Board, Die, GROUP_COLORS, GROUP_INK, SEAT_COLORS, SEAT_INK, money, useDie, useTokenPositions, type Highlight } from './Board';
 import { PublicKey } from '@solana/web3.js';
 
@@ -154,6 +154,8 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
   const rentToast = useRentToast(feed, !die.tumbling && !!view && positions.every((at, index) => at === view.seats[index]?.position));
   const prefix = demo ? '/demo' : '', home = demo ? '/demo' : '/', invite = `${location.origin}${prefix}/play/${table}/${nonce}`;
   useEffect(() => (current && seat >= 0 ? runCrank(table, signer) : undefined), [table, signer, current, seat]);
+  const yourTurn = !!current && view.phase === 'playing' && view.stage === 'preroll' && seat >= 0 && seat === currentSeat(view);
+  useEffect(() => { if (yourTurn) { sounds.turn(); navigator.vibrate?.(60); } }, [yourTurn]);
   useEffect(() => { if (!demo && (view?.phase === 'free' || view?.phase === 'finished')) refresh(); }, [demo, view?.phase, refresh]);
   useEffect(() => {
     if (!current || seat < 0) return;
@@ -212,7 +214,6 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
         {!demo && <button type="button" className="head-btn" onClick={openWallet}>Wallet</button>}
         <button type="button" className="head-btn invite-btn" data-testid="invite-open" onClick={() => setInviteOpen(true)}>Invite</button>
       </div>
-      {rentToast && <p key={rentToast.at} className="rent-toast" role="status" data-testid="rent-toast">{rentToast.text}</p>}
       {inviteOpen && <InviteSheet invite={invite} onClose={() => setInviteOpen(false)} />}
       {tradeAlert && <div className="alert" role="status" data-testid="trade-alert">
         {view.stage === 'tradeopen' ? `${view.seats[turnSeat].name} landed on Auction and is picking a property to trade.`
@@ -223,12 +224,12 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
 
       <div className="table-grid">
         <div className="board-col">
-          <SeatStrip view={view} me={me} seats={[0, 1]} />
+        {rentToast && <p key={rentToast.at} className="rent-toast" role="status" data-testid="rent-toast">{rentToast.text}</p>}
+          <SeatStrip view={view} me={me} />
           <Board view={view} positions={positions} highlights={highlights} selected={selected} onSelect={space => setSelected(space === selected ? undefined : space)}>
             <Center view={view} seat={seat} myTurn={myTurn} left={left} now={now} busy={busy} die={die} card={card} timedOut={timedOut} demo={demo} home={home}
               onRoll={action('roll')} onBail={action('bail')} onStart={action('start')} onCancel={action('cancel')} onBuy={action('buy')} onPass={action('pass')} />
           </Board>
-          <SeatStrip view={view} me={me} seats={[2, 3]} />
         </div>
 
         <div className="side">
@@ -360,23 +361,22 @@ function Center({ view, seat, myTurn, left, now, busy, die, card, timedOut, demo
 }
 
 /** Phones: two seats above the board and two below, each with cash and net worth. */
-function SeatStrip({ view, me, seats }: { view: TableView; me: string; seats: number[] }) {
+/** Phones: every seat in one row above the board, with cash and a bar toward the target. */
+function SeatStrip({ view, me }: { view: TableView; me: string }) {
   const live = view.phase !== 'lobby', turn = view.phase === 'playing' ? currentSeat(view) : -1;
   return (
-    <div className="seat-strip">{seats.map((index, at) => {
-      const seat = view.seats[index];
-      if (!seat) return <span key={index} />;
-      const out = seat.eliminatedAt > 0;
+    <div className="seat-strip" style={{ gridTemplateColumns: `repeat(${live ? Math.max(view.seats.length, 2) : view.maxPlayers}, minmax(0, 1fr))` }}>{view.seats.map((seat, index) => {
+      const out = seat.eliminatedAt > 0, worth = netWorth(view, index);
       return (
-        <div key={seat.wallet} className={`seat-chip${at ? ' right' : ''}${index === turn ? ' turn' : ''}${out ? ' out' : ''}`}>
-          <span className="player-token" style={{ background: SEAT_COLORS[index], color: SEAT_INK[index] }}>{seat.name.slice(0, 1).toUpperCase()}</span>
-          <span className="seat-text">
-            <span className="seat-name">{seat.name}{seat.wallet === me && <em> (you)</em>}{seat.jailTurns > 0 && <small> · jail</small>}</span>
-            {live && <span className="seat-money"><span className={`cash${seat.cash < 0 ? ' neg' : ''}`}>{money(seat.cash)}</span> <span className="worth">({money(netWorth(view, index))})</span></span>}
-          </span>
+        <div key={seat.wallet} className={`seat-chip${index === turn ? ' turn' : ''}${out ? ' out' : ''}`} style={{ '--seat': SEAT_COLORS[index] } as CSSProperties} data-testid={`seat-chip-${index}`}>
+          <span className="seat-name"><span className="player-token" style={{ background: SEAT_COLORS[index], color: SEAT_INK[index] }}>{seat.name.slice(0, 1).toUpperCase()}</span>
+            {seat.wallet === me ? 'You' : seat.name}</span>
+          {live && <span className={`seat-cash${seat.cash < 0 ? ' neg' : ''}`}>{money(seat.cash)}</span>}
+          {live && <span className="seat-note">{out ? 'Out' : seat.jailTurns > 0 ? 'In jail' : `Worth ${money(worth)}`}</span>}
+          {live && <span className="seat-bar"><i style={{ width: `${Math.min(100, Math.max(0, worth / view.target * 100))}%` }} /></span>}
         </div>
       );
-    })}</div>
+    })}{!live && Array.from({ length: Math.max(0, view.maxPlayers - view.seats.length) }, (_, at) => <div key={`open-${at}`} className="seat-chip open"><span className="seat-name">Open seat</span></div>)}</div>
   );
 }
 

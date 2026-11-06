@@ -67,6 +67,13 @@ export const sounds = {
     const ctx = audio();
     if (ctx) tone(ctx, ctx.currentTime, 'triangle', 760 - Math.min(left, 9) * 38, 700 - Math.min(left, 9) * 38, 0.12, 0.06);
   },
+  /** Your turn: a short rising two-note chime. */
+  turn() {
+    const ctx = audio();
+    if (!ctx) return;
+    tone(ctx, ctx.currentTime, 'triangle', 523, 523, 0.14, 0.14);
+    tone(ctx, ctx.currentTime + 0.11, 'triangle', 784, 784, 0.14, 0.22);
+  },
   /** A token arriving on its space. */
   land() {
     const ctx = audio();
