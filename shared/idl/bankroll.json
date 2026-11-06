@@ -779,6 +779,10 @@
         {
           "name": "target",
           "type": "u64"
+        },
+        {
+          "name": "theme",
+          "type": "u8"
         }
       ]
     },
@@ -1398,7 +1402,7 @@
     {
       "code": 6001,
       "name": "InvalidConfig",
-      "msg": "Players must be 2-4 and the target 3000, 5000 or 7000"
+      "msg": "Players must be 2-4, the target 3000, 5000 or 7000, and the theme 0-2"
     },
     {
       "code": 6002,
@@ -1814,6 +1818,13 @@
                 "name": "Trade"
               }
             }
+          },
+          {
+            "name": "theme",
+            "docs": [
+              "The host's board theme for this game, below `BOARD_THEMES`. Display only."
+            ],
+            "type": "u8"
           }
         ]
       }

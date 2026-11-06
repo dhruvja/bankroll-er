@@ -174,7 +174,7 @@ impl Harness {
         )
     }
     fn open(&mut self, players: u8, target: u64) {
-        let open = self.enter(0, bankroll::instruction::OpenTable { name: "Host".into(), entry: USDC, max_players: players, target });
+        let open = self.enter(0, bankroll::instruction::OpenTable { name: "Host".into(), entry: USDC, max_players: players, target, theme: 0 });
         let host = self.players[0].insecure_clone();
         self.send(&[&host], open).unwrap();
     }
@@ -471,7 +471,7 @@ fn substituted_custody_recipient_treasury_or_mint_cannot_take_funds() {
 fn money_instructions_reject_base_clones_missing_records_and_foreign_custody() {
     for case in 0..5 {
         let mut h = Harness::new();
-        let mut open = h.enter(0, bankroll::instruction::OpenTable { name: "Host".into(), entry: USDC, max_players: 2, target: 3000 });
+        let mut open = h.enter(0, bankroll::instruction::OpenTable { name: "Host".into(), entry: USDC, max_players: 2, target: 3000, theme: 0 });
         match case {
             0 => h.svm.set_account(record(h.table), Account::default()).unwrap(),
             1 => {
@@ -581,7 +581,7 @@ fn a_reused_table_carries_no_state_from_the_previous_game() {
         set_token(&mut h.svm, wallet, USDC_MINT, USDC, false);
     }
     h.clock(T0 + 50);
-    let open = h.enter(3, bankroll::instruction::OpenTable { name: "Next".into(), entry: USDC, max_players: 2, target: 3000 });
+    let open = h.enter(3, bankroll::instruction::OpenTable { name: "Next".into(), entry: USDC, max_players: 2, target: 3000, theme: 0 });
     let host = h.players[3].insecure_clone();
     h.send(&[&host], open).unwrap();
     let table = h.read();

@@ -195,7 +195,7 @@ fn seat_players(table: &mut Table, rng: &mut Rng, players: usize, max_players: u
     let wallets: Vec<Pubkey> = (0..players).map(|_| rng.wallet()).collect();
     let (index, bump, game_nonce, vrf_nonce) = (table.index, table.bump, table.game_nonce, table.vrf_nonce);
     let host_name = encode_name("host").unwrap();
-    table.open(wallets[0], host_name, entry, max_players, target, now).unwrap();
+    table.open(wallets[0], host_name, entry, max_players, target, 0, now).unwrap();
     assert_fresh(table, index, bump, game_nonce + 1, vrf_nonce, wallets[0], host_name);
     for wallet in &wallets[1..] {
         table.join(*wallet, encode_name("guest").unwrap(), table.game_nonce, now).unwrap();

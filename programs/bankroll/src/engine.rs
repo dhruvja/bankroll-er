@@ -92,6 +92,7 @@ impl Table {
 
     /// A Free table becomes this host's lobby. Everything from the previous game is cleared;
     /// only the table identity and the two monotonic nonces survive.
+    #[allow(clippy::too_many_arguments)] // Mirrors the open_table instruction args one to one.
     pub fn open(
         &mut self,
         host: Pubkey,
@@ -99,12 +100,15 @@ impl Table {
         entry: u64,
         max_players: u8,
         target: u64,
+        theme: u8,
         now: i64,
     ) -> Result<()> {
         require!(self.phase == TablePhase::Free, GameError::InvalidPhase);
         require!(ENTRIES.contains(&entry), GameError::InvalidEntry);
         require!(
-            (2..=MAX_SEATS as u8).contains(&max_players) && TARGETS.contains(&target),
+            (2..=MAX_SEATS as u8).contains(&max_players)
+                && TARGETS.contains(&target)
+                && theme < BOARD_THEMES,
             GameError::InvalidConfig
         );
         *self = Table {
@@ -120,6 +124,7 @@ impl Table {
             entry,
             max_players,
             target,
+            theme,
             player_count: 1,
             lobby_deadline: now.checked_add(LOBBY_SECONDS).ok_or(GameError::Overflow)?,
             last_action_at: now,

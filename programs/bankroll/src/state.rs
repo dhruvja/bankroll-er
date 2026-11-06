@@ -4,6 +4,9 @@ use crate::board::SPACES;
 
 pub const MAX_SEATS: usize = 4;
 pub const NAME_LEN: usize = 16;
+/// Board name sets the client can draw (0 Classic, 1 Bangalore, 2 Mumbai). Rules and prices are
+/// identical across themes; only the names differ.
+pub const BOARD_THEMES: u8 = 3;
 pub const NO_OWNER: u8 = u8::MAX;
 /// Space 0 (Start) is never a property, so it marks an empty trade offer and zeroed bytes read as none.
 pub const NO_OFFER: u8 = 0;
@@ -20,7 +23,8 @@ pub const SHARES_BPS: [[u64; 3]; 3] = [[9700, 0, 0], [6700, 3000, 0], [6000, 270
 pub const ENTRIES: [u64; 3] = [1_000_000, 5_000_000, 10_000_000];
 /// Zero bytes allocated after the serialized Table. Later phases append fields here without
 /// changing the account size; old accounts read the new fields as zero.
-pub const TABLE_RESERVED: usize = 1024;
+/// 1023 since `theme` took one byte, so TABLE_SPACE (and every live account) stays the same size.
+pub const TABLE_RESERVED: usize = 1023;
 pub const TABLE_SPACE: usize = 8 + Table::INIT_SPACE + TABLE_RESERVED;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -101,6 +105,8 @@ pub struct Table {
     pub seats: [Seat; MAX_SEATS],
     pub board: [Lot; SPACES],
     pub trade: Trade,
+    /// The host's board theme for this game, below `BOARD_THEMES`. Display only.
+    pub theme: u8,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Default, Debug, PartialEq, InitSpace)]
@@ -177,7 +183,7 @@ pub enum VrfPurpose {
 pub enum GameError {
     #[msg("Entry must be 1, 5, or 10 devnet USDC")]
     InvalidEntry,
-    #[msg("Players must be 2-4 and the target 3000, 5000 or 7000")]
+    #[msg("Players must be 2-4, the target 3000, 5000 or 7000, and the theme 0-2")]
     InvalidConfig,
     #[msg("Name must contain 1 to 16 UTF-8 bytes")]
     InvalidName,

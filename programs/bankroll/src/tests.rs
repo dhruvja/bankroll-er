@@ -22,7 +22,7 @@ fn wallets() -> [Pubkey; MAX_SEATS] {
 fn lobby(players: usize, target: u64) -> Table {
     let w = wallets();
     let mut table = Table { index: 3, bump: 250, ..Table::default() };
-    table.open(w[0], name("host"), USDC, MAX_SEATS as u8, target, T0).unwrap();
+    table.open(w[0], name("host"), USDC, MAX_SEATS as u8, target, 0, T0).unwrap();
     for (i, wallet) in w.iter().enumerate().take(players).skip(1) {
         table.join(*wallet, name(&format!("p{i}")), table.game_nonce, T0).unwrap();
     }
@@ -49,14 +49,15 @@ fn roll(table: &mut Table, value: u8, now: i64) {
 fn lobby_validates_config_nonce_capacity_and_refunds_free_the_table() {
     let w = wallets();
     let mut free = Table::default();
-    assert!(free.open(w[0], name("h"), 2 * USDC, 3, 3000, T0).is_err());
-    assert!(free.open(w[0], name("h"), USDC, 5, 3000, T0).is_err());
-    assert!(free.open(w[0], name("h"), USDC, 1, 3000, T0).is_err());
-    assert!(free.open(w[0], name("h"), USDC, 3, 4000, T0).is_err());
+    assert!(free.open(w[0], name("h"), 2 * USDC, 3, 3000, 0, T0).is_err());
+    assert!(free.open(w[0], name("h"), USDC, 5, 3000, 0, T0).is_err());
+    assert!(free.open(w[0], name("h"), USDC, 1, 3000, 0, T0).is_err());
+    assert!(free.open(w[0], name("h"), USDC, 3, 4000, 0, T0).is_err());
+    assert!(free.open(w[0], name("h"), USDC, 3, 3000, BOARD_THEMES, T0).is_err(), "unknown board theme");
     assert!(encode_name("  ").is_err());
     assert!(encode_name("seventeen bytes!!").is_err());
-    free.open(w[0], name("h"), USDC, 2, 3000, T0).unwrap();
-    assert!(free.open(w[1], name("x"), USDC, 2, 3000, T0).is_err());
+    free.open(w[0], name("h"), USDC, 2, 3000, 0, T0).unwrap();
+    assert!(free.open(w[1], name("x"), USDC, 2, 3000, 0, T0).is_err());
     assert!(free.join(w[0], name("dup"), 1, T0).is_err());
     assert!(free.join(w[1], name("stale"), 0, T0).is_err());
     assert!(free.start(w[0], T0).is_err(), "one player cannot start");
@@ -499,7 +500,7 @@ fn open_resets_every_game_field_but_keeps_identity_and_nonces() {
     assert_eq!(table.phase, TablePhase::Free);
     let (game_nonce, vrf_nonce) = (table.game_nonce, table.vrf_nonce);
     let host = Pubkey::new_unique();
-    table.open(host, name("next"), 5 * USDC, 2, 3000, T0 + 9_000).unwrap();
+    table.open(host, name("next"), 5 * USDC, 2, 3000, 0, T0 + 9_000).unwrap();
     let mut fresh = Table {
         index: 3,
         bump: 250,
@@ -571,12 +572,17 @@ fn ranked_payouts_cover_every_order_and_tie_for_two_three_and_four_seats() {
     assert!(playing(2, 3000).payouts().is_err(), "only a finished game pays out");
 }
 
+/// Size of the live devnet table_v1 accounts (read from the rollup on 2026-11-06).
+const LIVE_TABLE_SPACE: usize = 1495;
+
 #[test]
 fn board_constants_match_the_frozen_economy() {
     assert_eq!(BOARD.len(), 24);
     assert_eq!(BOARD[23].price, 400);
     assert_eq!(SHARES_BPS.iter().map(|row| row.iter().sum::<u64>() + FEE_BPS).collect::<Vec<_>>(), [10_000; 3]);
     assert!(TABLE_SPACE < 10_240);
+    // Live table_v1 accounts were created at this size; new fields must come out of TABLE_RESERVED.
+    assert_eq!(TABLE_SPACE, LIVE_TABLE_SPACE);
 }
 
 // ---- Phase 03: full rules ----
@@ -1194,4 +1200,14 @@ fn eliminated_seats_cannot_offer_and_accept_revalidates_both_properties() {
     let mut table = offered;
     table.accept_trade(w[0], 2, 17, T0 + 4).unwrap();
     assert_eq!((table.board[14].owner, table.board[17].owner, table.board[1].owner), (2, 0, 1));
+}
+
+#[test]
+fn open_records_the_board_theme() {
+    let w = wallets();
+    for theme in 0..BOARD_THEMES {
+        let mut table = Table::default();
+        table.open(w[0], name("h"), USDC, 2, 3000, theme, T0).unwrap();
+        assert_eq!(table.theme, theme);
+    }
 }
