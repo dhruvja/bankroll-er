@@ -717,7 +717,7 @@ fn a_late_callback_after_a_vrf_re_request_fails_and_a_jailed_roll_skips_the_orac
 fn bankruptcy_and_forfeit_rank_through_settle() {
     let mut h = Harness::new();
     h.playing(4, 4500);
-    // Seat 0 lands on seat 1's full-Gold Tokyo with 3 buildings ($245) holding $100: bankrupt.
+    // Seat 0 lands on seat 1's full-Gold Tokyo with 3 buildings ($385) holding $100: bankrupt.
     let mut table = h.read();
     table.board[25] = bankroll::Lot { owner: 1, buildings: 3 };
     table.board[26].owner = 1;
@@ -731,7 +731,7 @@ fn bankruptcy_and_forfeit_rank_through_settle() {
     h.callback(scoped_identity(), die(3), h.read().vrf_nonce).unwrap();
     let table = h.read();
     assert_eq!((table.seats[0].eliminated_at, table.board[1].owner, table.turn), (1, NO_OWNER, 1));
-    assert_eq!(table.seats[1].cash, 2000 + 245);
+    assert_eq!(table.seats[1].cash, 2000 + 385);
 
     // Seats 1 and 2 time out once; seat 3's third strike forfeits it.
     for _ in 0..3 {
@@ -761,7 +761,7 @@ fn bankruptcy_and_forfeit_rank_through_settle() {
 fn the_worst_case_roll_callback_fits_the_vrf_callback_budget() {
     // A 6 lands on Lucky Card (21) and every card is drawn in turn. The move cards add the heaviest
     // landing: card 10 moves seat 0 onto seat 1's Power Plant (all four publics, $100) and card 11
-    // onto seat 1's Paris in a full Green group with 3 buildings ($182). Either rent takes seat 0
+    // onto seat 1's Paris in a full Green group with 3 buildings ($286). Either rent takes seat 0
     // below -$500 and releases seven holdings. Three seats remain, so every end condition is evaluated.
     let mut worst = 0;
     for card in 1..=12u8 {
@@ -790,7 +790,7 @@ fn the_worst_case_roll_callback_fits_the_vrf_callback_budget() {
         eprintln!("card {card}: consume_randomness CU {}", result.compute_units_consumed);
         if let Some((space, rent)) = match card {
             10 => Some((24, 100)),
-            11 => Some((18, 182)),
+            11 => Some((18, 286)),
             _ => None,
         } {
             assert_eq!((after.seats[0].position, after.seats[0].eliminated_at), (space, 1), "bankrupt on card {card} rent");

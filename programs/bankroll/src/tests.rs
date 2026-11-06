@@ -139,15 +139,15 @@ fn movement_salary_buy_and_pass() {
 }
 
 #[test]
-fn rent_is_base_doubled_for_a_full_group_and_scaled_for_publics() {
+fn rent_is_base_tripled_for_a_full_group_and_scaled_for_publics() {
     let mut table = playing(2, 4500);
     table.board[1].owner = 1;
     assert_eq!(table.rent(1), 6);
     table.board[2].owner = 1;
-    assert_eq!(table.rent(1), 12);
-    assert_eq!(table.rent(2), 16);
+    assert_eq!(table.rent(1), 18);
+    assert_eq!(table.rent(2), 24);
     table.board[1].buildings = 3;
-    assert_eq!(table.rent(1), 42, "building multipliers apply with the full group");
+    assert_eq!(table.rent(1), 66, "building multipliers apply with the full group");
     table.board[2].owner = NO_OWNER;
     assert_eq!(table.rent(1), 6, "a broken group falls back to base rent");
     table.board[1].buildings = 0;
@@ -159,8 +159,8 @@ fn rent_is_base_doubled_for_a_full_group_and_scaled_for_publics() {
     table.board[2].owner = 1;
     let (payer, owner) = (table.seats[0].cash, table.seats[1].cash);
     roll(&mut table, 2, T0 + 1);
-    assert_eq!(table.seats[0].cash, payer - 16);
-    assert_eq!(table.seats[1].cash, owner + 16);
+    assert_eq!(table.seats[0].cash, payer - 24);
+    assert_eq!(table.seats[1].cash, owner + 24);
     table.board[4].owner = 0;
     roll(&mut table, 3, T0 + 2);
     assert_eq!(table.seats[1].position, 3);
@@ -271,8 +271,8 @@ fn rent_that_bankrupts_eliminates_the_payer() {
     table.seats[0].position = 26;
     let owner = table.seats[1].cash;
     roll(&mut table, 1, T0 + 1);
-    assert_eq!(table.seats[0].eliminated_at, 1, "-50 - 280 leaves net worth below zero");
-    assert_eq!(table.seats[1].cash, owner + 280, "New York, full Gold, 3 buildings: 40 x 7");
+    assert_eq!(table.seats[0].eliminated_at, 1, "-50 - 440 leaves net worth below zero");
+    assert_eq!(table.seats[1].cash, owner + 440, "New York, full Gold, 3 buildings: 40 x 11");
     assert_eq!(table.phase, TablePhase::Finished);
     assert_eq!(table.payouts().unwrap(), [0, 1_940_000, 0, 0]);
 }
@@ -819,13 +819,13 @@ fn buildings_need_the_full_group_cap_at_a_hotel_and_scale_rent() {
     assert!(table.build(wallets()[0], 30, T0 + 1).is_err(), "no such space");
     assert!(table.build(wallets()[1], 1, T0 + 1).is_err(), "not seat 1's turn");
     let worth = table.net_worth(0);
-    for (built, rent) in [(1u8, 18i64), (2, 30), (3, 42), (4, 60), (5, 84)] {
+    for (built, rent) in [(1u8, 24i64), (2, 42), (3, 66), (4, 96), (5, 132)] {
         table.build(wallets()[0], 1, T0 + 1).unwrap();
         assert_eq!((table.board[1].buildings, table.rent(1)), (built, rent));
     }
     assert_eq!(table.seats[0].cash, 750);
     assert_eq!(table.net_worth(0), worth, "building converts cash into holdings");
-    assert_eq!(table.rent(2), 16, "an unbuilt city of a full group pays double");
+    assert_eq!(table.rent(2), 24, "an unbuilt city of a full group pays triple");
     assert!(table.build(wallets()[0], 1, T0 + 1).is_err(), "four houses and a hotel at most");
     table.seats[0].cash = 49;
     assert!(table.build(wallets()[0], 2, T0 + 1).is_err(), "needs cash >= cost");
@@ -833,7 +833,7 @@ fn buildings_need_the_full_group_cap_at_a_hotel_and_scale_rent() {
     table.board[27] = Lot { owner: 1, buildings: 3 };
     table.board[25].owner = 1;
     table.board[26].owner = 1;
-    assert_eq!(table.rent(27), 280, "New York, full Gold, 3 buildings: 40 x 7");
+    assert_eq!(table.rent(27), 440, "New York, full Gold, 3 buildings: 40 x 11");
     table.board[25].owner = NO_OWNER;
     assert_eq!(table.rent(27), 40, "a broken group keeps its buildings but pays base rent");
     assert!(table.build(wallets()[0], 5, T0 + 1).is_err());
@@ -905,7 +905,7 @@ fn negative_cash_blocks_buying_building_and_bail_but_not_selling_or_rolling() {
 
 #[test]
 fn both_bankruptcy_triggers_eliminate_and_free_holdings() {
-    // Gold full group: Tokyo rent 70 unbuilt, 140 with one building.
+    // Gold full group: Tokyo rent 105 unbuilt, 140 with one building.
     let setup = |cash: i64, tokyo_buildings: u8, holdings: bool| {
         let mut table = playing(3, 4500);
         table.board[25] = Lot { owner: 1, buildings: tokyo_buildings };
@@ -922,16 +922,16 @@ fn both_bankruptcy_triggers_eliminate_and_free_holdings() {
         table
     };
     let table = setup(-400, 1, true);
-    assert_eq!(table.seats[0].eliminated_at, 1, "cash -540 is below -500 despite net worth 1610");
+    assert_eq!(table.seats[0].eliminated_at, 1, "cash -540 is below -200 despite net worth 1610");
     assert_eq!(table.seats[0].cash, 0, "an eliminated seat's cash is discarded");
     assert!(table.board.iter().all(|lot| lot.owner != 0), "its properties become unowned");
     assert_eq!([18, 19, 20].map(|space| table.board[space].buildings), [0, 0, 0], "buildings are removed");
     assert_eq!(table.turn, 1);
-    let table = setup(-430, 0, true);
-    assert_eq!((table.seats[0].eliminated_at, table.seats[0].cash), (0, -500), "exactly -500 survives");
-    let table = setup(70, 0, false);
+    let table = setup(-95, 0, true);
+    assert_eq!((table.seats[0].eliminated_at, table.seats[0].cash), (0, -200), "exactly -200 survives");
+    let table = setup(105, 0, false);
     assert_eq!(table.seats[0].eliminated_at, 1, "net worth exactly 0 is bankrupt");
-    let table = setup(71, 0, false);
+    let table = setup(106, 0, false);
     assert_eq!(table.seats[0].eliminated_at, 0);
 }
 
@@ -939,11 +939,11 @@ fn both_bankruptcy_triggers_eliminate_and_free_holdings() {
 fn end_conditions_cover_last_standing_a_non_roller_reaching_target_and_ranking_above_it() {
     // The owner, not the roller, crosses the target on collected rent.
     let mut table = playing(3, 4500);
-    // Tokyo with 3 buildings in a full Gold group: rent 35 x 7 = 245; holdings 350 + 600 + 350 + 400.
+    // Tokyo with 3 buildings in a full Gold group: rent 35 x 11 = 385; holdings 350 + 600 + 350 + 400.
     table.board[25] = Lot { owner: 1, buildings: 3 };
     table.board[26].owner = 1;
     table.board[27].owner = 1;
-    table.seats[1].cash = 4_500 - 245 - 1_700 + 1;
+    table.seats[1].cash = 4_500 - 385 - 1_700 + 1;
     table.seats[0].position = 22;
     roll(&mut table, 3, T0 + 1);
     assert_eq!(table.net_worth(1), 4_501);

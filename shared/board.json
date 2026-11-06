@@ -293,16 +293,16 @@
     "bail": 150,
     "tradeBonus": 100,
     "saleBps": 8000,
-    "bankruptCashBelow": -500,
+    "bankruptCashBelow": -200,
     "maxBuildingsPerCity": 5,
     "maxRollsPerTurn": 3,
-    "groupRentMultiplier": 2,
+    "groupRentMultiplier": 3,
     "buildingRentMultipliers": [
-      3,
-      5,
+      4,
       7,
-      10,
-      14
+      11,
+      16,
+      22
     ],
     "targets": [
       1800,

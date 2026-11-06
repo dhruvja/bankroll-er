@@ -20,7 +20,7 @@ export function Rules({ demo }: { demo: boolean }) {
       <h3>Properties</h3>
       <ul>
         <li>Land on an unowned property to buy it or pass ({rules.deadlinesSec.buyDecision} seconds).</li>
-        <li>Land on someone else’s and you pay them rent. Rent doubles once they own the whole color group.</li>
+        <li>Land on someone else’s and you pay them rent. Rent triples once they own the whole color group.</li>
         <li>Houses: own every area of one color, then on your turn before you roll, tap an area and build. Up to 4 houses, then a hotel; rent climbs with each.</li>
         <li>The metro, airport, bus and power company take no houses. Their rent grows with how many of the four the owner has.</li>
         <li>On your turn you can sell a property for {rules.saleBps / 100}% of its price and buildings.</li>
