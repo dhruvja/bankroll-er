@@ -184,8 +184,8 @@ export class BankrollClient implements PaymentClient {
     await Promise.all([this.verifyDevnet(), this.verifyPublicRollup(), this.verifyTableRoute(table)]);
     return this.sendEr(label, [buildInstruction(name, accountsFor(table, signer.publicKey, recipient), args, remaining)], signer);
   }
-  openTable(table: PublicKey, host: Signer, options: { name: string; entry: number; maxPlayers: number; target: number }) {
-    return this.act('open', 'open_table', table, host, { name: options.name, entry: u64(options.entry), max_players: options.maxPlayers, target: u64(options.target) });
+  openTable(table: PublicKey, host: Signer, options: { name: string; entry: number; maxPlayers: number; target: number; theme?: number }) {
+    return this.act('open', 'open_table', table, host, { name: options.name, entry: u64(options.entry), max_players: options.maxPlayers, target: u64(options.target), theme: options.theme ?? 0 });
   }
   joinTable(table: PublicKey, player: Signer, nonce: number, name: string) {
     return this.act('join', 'join_table', table, player, { expected_nonce: u64(nonce), name });

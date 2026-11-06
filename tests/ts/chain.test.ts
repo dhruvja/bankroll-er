@@ -83,7 +83,7 @@ test('expectedPayouts mirrors the program for ranks, ties, eliminations and dust
 
 test('the IDL builder orders accounts and flags signers, and settle appends each seat pair', async () => {
   const actor = Keypair.generate().publicKey, table = tableAddress(2);
-  const open = buildInstruction('open_table', accountsFor(table, actor), { name: 'Host', entry: new BN(1_000_000), max_players: 3, target: new BN(3000) });
+  const open = buildInstruction('open_table', accountsFor(table, actor), { name: 'Host', entry: new BN(1_000_000), max_players: 3, target: new BN(3000), theme: 0 });
   assert.ok(open.programId.equals(PROGRAM_ID));
   assert.deepEqual(open.keys.map(key => key.pubkey.toBase58()), [actor, table, open.keys[2].pubkey, tokenAddress(actor), tokenAddress(table),
     custodyAddress(table), custodyAddress(actor), open.keys[7].pubkey].map(key => key.toBase58()));

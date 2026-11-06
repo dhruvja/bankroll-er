@@ -13,7 +13,7 @@ function table(index: number, overrides: Partial<TableView> = {}): TableView {
     address: tableAddress(index).toBase58(), index, phase: 'free', gameNonce: 1, vrfNonce: 0, host: seat().wallet, entry: ENTRY, maxPlayers: 3,
     target: 5000, playerCount: 3, lobbyDeadline: NOW + 600, lastActionAt: NOW - 10, stage: 'idle', stageDeadline: 0, turn: 0, order: [0, 1, 2, 3],
     round: 0, rollsThisTurn: 0, extraRoll: false, vrfPending: false, vrfRequestedAt: 0, lastRoll: 0, lastCard: 0, eliminationSeq: 0, endedAt: 0,
-    seats: [seat(), seat(), seat()], board: [], trade: { space: 0, offers: [], deadline: 0 }, ...overrides,
+    seats: [seat(), seat(), seat()], board: [], trade: { space: 0, offers: [], deadline: 0 }, theme: 0, ...overrides,
   };
 }
 

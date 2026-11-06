@@ -57,6 +57,7 @@ interface RawTable {
   last_roll: number; last_card: number; elimination_seq: number; ended_at: BN;
   seats: RawSeat[]; board: { owner: number; buildings: number }[];
   trade: { space: number; offers: number[]; deadline: BN };
+  theme: number;
 }
 
 export interface SeatView {
@@ -75,6 +76,8 @@ export interface TableView {
   /** Live only in `tradeoffers`: the lander's offered space, each seat's counter-offer (`NO_OFFER`
    * for none) and when offers close. The lander may decide until `stageDeadline`. */
   trade: { space: number; offers: number[]; deadline: number };
+  /** Board theme the host picked: an index into `THEMES` (names only, rules are shared). */
+  theme: number;
 }
 
 const variant = (value: Record<string, unknown>) => Object.keys(value)[0].replaceAll('_', '').toLowerCase();
@@ -99,6 +102,7 @@ export function decodeTable(address: PublicKey, data: Buffer): TableView {
     })),
     board: raw.board.map(lot => ({ owner: lot.owner, buildings: lot.buildings })),
     trade: { space: raw.trade.space, offers: raw.trade.offers.slice(0, count), deadline: raw.trade.deadline.toNumber() },
+    theme: raw.theme,
   };
 }
 
