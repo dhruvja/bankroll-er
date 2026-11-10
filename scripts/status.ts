@@ -1,17 +1,14 @@
 /**
- * Read-only pool report from the ER: occupancy, tables that need a client or operator action
- * (expired lobbies, games past the idle deadline, failing settles, pending refunds), custody
- * against what each table owes, and the treasury balance. Exits 1 when any custody is short.
+ * Read-only house report from the ER: house lamports and how many more tables it can sponsor,
+ * live tables by phase and those awaiting a client crank, each table's `held` against what it owes,
+ * the house `liability` against the vault and against the tables' `held`, strays and the treasury.
+ * Exits 1 on a shortfall or a liability mismatch.
  */
-import { PublicKey } from '@solana/web3.js';
-import { PROGRAM_ID, treasuryAddress } from '../shared/chain';
-import { poolStatus } from '../shared/status';
-import { client, readDeployment, requireDevnet, saveArtifact } from './node';
+import { PROGRAM_ID } from '../shared/chain';
+import { readDeployment, readHouseStatus, requireDevnet, saveArtifact } from './node';
 
 await requireDevnet();
-const deployment = readDeployment();
-const tables = await client.readTables(deployment.tables);
-const custody = await Promise.all(tables.map(table => client.erTokenBalance(new PublicKey(table.address))));
-const status = poolStatus(tables, custody, await client.erTokenBalance(treasuryAddress()), await client.erNow());
+readDeployment();
+const status = await readHouseStatus();
 console.log(saveArtifact(process.env.BANKROLL_STATUS_FILE ?? 'status.json', { at: new Date().toISOString(), program: PROGRAM_ID.toBase58(), ...status }));
 if (!status.ok) process.exit(1);
