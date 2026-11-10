@@ -1,5 +1,5 @@
 [workspace]
-members = ["programs/spike"]
+members = ["programs/spike", "programs/eph-spike"]
 resolver = "2"
 
 [profile.release]
