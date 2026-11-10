@@ -8,6 +8,7 @@ import { NO_OFFER, NO_OWNER, canBuild, currentSeat, expectedPayouts, isActive, n
 import { acceptTrade, act, canReceive, client, friendlyError, joinTable, property, runCrank, subscribeTable, tableTransactions, trade, watchTableTransactions, type TableTransaction } from './lib/game';
 import { sounds, useSoundToggle } from './sound';
 import { RulesSheet } from './Rules';
+import { moveMoney, seatElement, spaceElement } from './effects';
 import { Board, Die, GROUP_COLORS, GROUP_INK, SEAT_COLORS, SEAT_INK, faces, money, useDie, useTokenPositions, type Highlight } from './Board';
 import { PublicKey } from '@solana/web3.js';
 
@@ -57,6 +58,9 @@ export interface FeedEntry {
   at: number; kind: 'roll' | 'salary' | 'buy' | 'sell' | 'build' | 'trade' | 'rent' | 'card' | 'jail' | 'bail' | 'strike' | 'out' | 'end'; text: string;
   /** The property the entry is about, shown as a small deed in the announcement. */
   space?: number;
+  /** For the money effects: the seat acting, the other seat (rent owner, swap partner), the dollars
+   * and the Lucky card drawn. */
+  seat?: number; other?: number; amount?: number; card?: number;
 }
 
 /** A readable game log derived from consecutive table snapshots, kept per game in this browser. */
@@ -72,39 +76,39 @@ function useFeed(view: TableView | undefined, key: string) {
     if (before.phase === 'playing' && before.stage === 'rolling' && view.stage !== 'rolling' && view.vrfNonce === before.vrfNonce && view.lastRoll) {
       added.push({ at, kind: 'roll', text: `${name(lander)} rolled a ${view.lastRoll}${view.lastCard ? '' : ` to ${spacesFor(view.theme)[view.seats[lander].position].name}`}` });
       // Mirrors the program: the roll itself carrying the token past Start pays the salary.
-      if (before.seats[lander].position + view.lastRoll >= board.spaces.length) added.push({ at, kind: 'salary', text: `${name(lander)} passed Start and collected ${money(board.rules.salary)}` });
-      if (view.lastCard) added.push({ at, kind: 'card', text: `${name(lander)} drew: ${board.luckyDeck[view.lastCard - 1].text}` });
+      if (before.seats[lander].position + view.lastRoll >= board.spaces.length) added.push({ at, kind: 'salary', seat: lander, amount: board.rules.salary, text: `${name(lander)} passed Start and collected ${money(board.rules.salary)}` });
+      if (view.lastCard) added.push({ at, kind: 'card', seat: lander, card: view.lastCard, text: `${name(lander)} drew: ${board.luckyDeck[view.lastCard - 1].text}` });
       const landed = view.seats[lander].position, lot = view.board[landed];
       if (lot.owner !== NO_OWNER && lot.owner !== lander) {
         const paid = view.seats[lot.owner].cash - before.seats[lot.owner].cash;
-        if (paid > 0) added.push({ at, kind: 'rent', space: landed, text: `${name(lander)} paid ${money(paid)} rent to ${name(lot.owner)}` });
+        if (paid > 0) added.push({ at, kind: 'rent', space: landed, seat: lander, other: lot.owner, amount: paid, text: `${name(lander)} paid ${money(paid)} rent to ${name(lot.owner)}` });
       }
     }
     const moved: { space: number; from: number; to: number }[] = [];
     view.board.forEach((lot, space) => {
       const was = before.board[space];
-      if (was.owner === NO_OWNER && lot.owner !== NO_OWNER) added.push({ at, kind: 'buy', space, text: `${name(lot.owner)} bought ${spacesFor(view.theme)[space].name} for ${money(spacesFor(view.theme)[space].price ?? 0)}` });
-      else if (was.owner !== NO_OWNER && lot.owner === NO_OWNER && before.phase === 'playing' && view.phase === 'playing' && !view.seats[was.owner]?.eliminatedAt) added.push({ at, kind: 'sell', space, text: `${name(was.owner)} sold ${spacesFor(view.theme)[space].name}` });
+      if (was.owner === NO_OWNER && lot.owner !== NO_OWNER) added.push({ at, kind: 'buy', space, seat: lot.owner, amount: spacesFor(view.theme)[space].price ?? 0, text: `${name(lot.owner)} bought ${spacesFor(view.theme)[space].name} for ${money(spacesFor(view.theme)[space].price ?? 0)}` });
+      else if (was.owner !== NO_OWNER && lot.owner === NO_OWNER && before.phase === 'playing' && view.phase === 'playing' && !view.seats[was.owner]?.eliminatedAt) added.push({ at, kind: 'sell', space, seat: was.owner, amount: saleValue(before, space), text: `${name(was.owner)} sold ${spacesFor(view.theme)[space].name}` });
       else if (was.owner !== NO_OWNER && lot.owner !== NO_OWNER && was.owner !== lot.owner) moved.push({ space, from: was.owner, to: lot.owner });
-      if (lot.owner === was.owner && lot.buildings > was.buildings) added.push({ at, kind: 'build', space, text: `${name(lot.owner)} built ${lot.buildings === HOTEL ? 'a hotel' : `house ${lot.buildings}`} on ${spacesFor(view.theme)[space].name}` });
+      if (lot.owner === was.owner && lot.buildings > was.buildings) added.push({ at, kind: 'build', space, seat: lot.owner, amount: spacesFor(view.theme)[space].buildingCost ?? 0, text: `${name(lot.owner)} built ${lot.buildings === HOTEL ? 'a hotel' : `house ${lot.buildings}`} on ${spacesFor(view.theme)[space].name}` });
     });
     // A swap is two lots that changed hands in opposite directions; pairing them survives coalesced updates.
     for (const [i, x] of moved.entries()) {
       const y = moved.slice(i + 1).find(other => other.from === x.to && other.to === x.from);
-      if (y) added.push({ at, kind: 'trade', text: `${name(x.to)} and ${name(y.to)} traded: ${name(x.to)} got ${spacesFor(view.theme)[x.space].name}, ${name(y.to)} got ${spacesFor(view.theme)[y.space].name}, ${money(board.rules.tradeBonus)} each` });
+      if (y) added.push({ at, kind: 'trade', seat: x.to, other: y.to, amount: board.rules.tradeBonus, text: `${name(x.to)} and ${name(y.to)} traded: ${name(x.to)} got ${spacesFor(view.theme)[x.space].name}, ${name(y.to)} got ${spacesFor(view.theme)[y.space].name}, ${money(board.rules.tradeBonus)} each` });
     }
     view.seats.forEach((seat, index) => {
       const was = before.seats[index];
       if (!was) return;
-      if (seat.strikes > was.strikes) added.push({ at, kind: 'strike', text: `${seat.name} ran out of time (strike ${seat.strikes} of ${board.rules.strikesToForfeit})` });
+      if (seat.strikes > was.strikes) added.push({ at, kind: 'strike', seat: index, text: `${seat.name} ran out of time (strike ${seat.strikes} of ${board.rules.strikesToForfeit})` });
       const turns = (count: number) => `${count} turn${count === 1 ? '' : 's'}`;
-      if (seat.jailTurns > 0 && was.jailTurns === 0) added.push({ at, kind: 'jail', text: `${seat.name} went to jail for ${turns(seat.jailTurns)}` });
+      if (seat.jailTurns > 0 && was.jailTurns === 0) added.push({ at, kind: 'jail', seat: index, space: board.rules.jailSpace, text: `${seat.name} went to jail for ${turns(seat.jailTurns)}` });
       else if (seat.jailTurns > 0 && seat.jailTurns < was.jailTurns) added.push({ at, kind: 'jail', text: `${seat.name} sits in jail: ${turns(seat.jailTurns)} left` });
       else if (seat.jailTurns === 0 && was.jailTurns > 0 && !seat.eliminatedAt) added.push(was.cash - seat.cash === board.rules.bail && before.stage === 'preroll'
-        ? { at, kind: 'bail', text: `${seat.name} paid ${money(board.rules.bail)} to get out of jail` } : { at, kind: 'jail', text: `${seat.name} is out of jail` });
+        ? { at, kind: 'bail', seat: index, amount: board.rules.bail, text: `${seat.name} paid ${money(board.rules.bail)} to get out of jail` } : { at, kind: 'jail', text: `${seat.name} is out of jail` });
       // A forfeit is the only way out with no payment behind it: not a roll, a swap, a bail or a seat already in debt.
       const bankrupt = before.stage === 'rolling' || moved.length > 0 || was.cash < 0 || (was.jailTurns > 0 && seat.jailTurns === 0);
-      if (seat.eliminatedAt && !was.eliminatedAt) added.push({ at, kind: 'out', text: seat.strikes >= board.rules.strikesToForfeit ? `${seat.name} forfeited after ${board.rules.strikesToForfeit} strikes`
+      if (seat.eliminatedAt && !was.eliminatedAt) added.push({ at, kind: 'out', seat: index, text: seat.strikes >= board.rules.strikesToForfeit ? `${seat.name} forfeited after ${board.rules.strikesToForfeit} strikes`
         : bankrupt ? `${seat.name} went bankrupt` : `${seat.name} forfeited; their properties are for sale` });
     });
     if (before.phase === 'playing' && view.phase !== 'playing') added.push({ at, kind: 'end', text: 'Game over' });
@@ -126,7 +130,7 @@ const ANNOUNCED = new Set<FeedEntry['kind']>(['salary', 'buy', 'sell', 'build', 
 function useAnnouncement(feed: FeedEntry[], landed: boolean) {
   const seen = useRef(feed[0]?.at ?? 0), [queue, setQueue] = useState<FeedEntry[]>([]), [shown, setShown] = useState<FeedEntry>();
   useEffect(() => {
-    const fresh = feed.filter(entry => ANNOUNCED.has(entry.kind) && entry.at > seen.current).reverse();
+    const fresh = feed.filter(entry => (ANNOUNCED.has(entry.kind) || entry.kind === 'card') && entry.at > seen.current).reverse();
     seen.current = Math.max(seen.current, feed[0]?.at ?? 0);
     if (fresh.length) setQueue(current => [...current, ...fresh]);
   }, [feed]);
@@ -136,14 +140,71 @@ function useAnnouncement(feed: FeedEntry[], landed: boolean) {
   }, [queue, landed, shown]);
   useEffect(() => {
     if (!shown) return;
-    const timer = setTimeout(() => setShown(undefined), queue.length ? 1800 : 3000);
+    // A Lucky card has its own reveal, so it only holds the queue while its money moves.
+    const timer = setTimeout(() => setShown(undefined), shown.kind === 'card' ? 1200 : queue.length ? 1800 : 3000);
     return () => clearTimeout(timer);
   }, [shown, queue.length]);
   return shown;
 }
 
+const LUCKY_SPACE = board.spaces.findIndex(space => space.kind === 'lucky');
+const AUCTION_SPACE = board.spaces.findIndex(space => space.kind === 'auction');
+
+/** The sound and money animation that go with an announcement, played as it appears: coins fly
+ * between the board and the players' tiles, then each amount floats off the tile it changed. */
+function playEffect(entry: FeedEntry, view: TableView) {
+  const seat = entry.seat ?? -1, other = entry.other ?? -1, amount = entry.amount ?? 0;
+  const chip = seatElement, space = spaceElement;
+  switch (entry.kind) {
+    case 'salary': sounds.coinIn(); moveMoney(space(0), chip(seat), [{ seat, amount }]); break;
+    case 'buy': sounds.buy(); moveMoney(chip(seat), space(entry.space ?? 0), [{ seat, amount: -amount }]); break;
+    case 'build': sounds.build(); moveMoney(chip(seat), space(entry.space ?? 0), [{ seat, amount: -amount }], 3); break;
+    case 'sell': sounds.coinIn(); moveMoney(space(entry.space ?? 0), chip(seat), [{ seat, amount }]); break;
+    case 'rent': sounds.coinOut(); moveMoney(chip(seat), chip(other), [{ seat, amount: -amount }, { seat: other, amount }]); break;
+    case 'bail': sounds.coinOut(); moveMoney(chip(seat), space(board.rules.jailSpace), [{ seat, amount: -amount }], 3); break;
+    case 'trade': sounds.trade(); for (const each of [seat, other]) moveMoney(space(AUCTION_SPACE), chip(each), [{ seat: each, amount }], 3); break;
+    case 'jail': if (entry.space !== undefined) sounds.jail(); break;
+    case 'strike': sounds.strike(); break;
+    case 'out': sounds.bankrupt(); break;
+    case 'card': {
+      const card = board.luckyDeck[(entry.card ?? 1) - 1], lucky = space(LUCKY_SPACE);
+      const others = view.seats.map((_, index) => index).filter(index => index !== seat && isActive(view, index));
+      if (card.kind === 'bank') {
+        if (card.amount > 0) { sounds.coinIn(); moveMoney(lucky, chip(seat), [{ seat, amount: card.amount }]); }
+        else { sounds.coinOut(); moveMoney(chip(seat), lucky, [{ seat, amount: card.amount }]); }
+      } else if (card.kind === 'pay_each' || card.kind === 'collect_each') {
+        const paying = card.kind === 'pay_each';
+        if (paying) sounds.coinOut(); else sounds.coinIn();
+        others.forEach((index, i) => moveMoney(paying ? chip(seat) : chip(index), paying ? chip(index) : chip(seat),
+          [{ seat: index, amount: paying ? card.amount : -card.amount }, ...(i === 0 ? [{ seat, amount: (paying ? -1 : 1) * card.amount * others.length }] : [])], 3));
+      } else if (card.kind === 'to_start') {
+        sounds.coinIn(); moveMoney(space(0), chip(seat), [{ seat, amount: board.rules.salary }]);
+      } else if (card.kind === 'repairs') {
+        const owed = card.amount * view.board.reduce((sum, lot) => sum + (lot.owner === seat ? lot.buildings : 0), 0);
+        if (owed > 0) { sounds.coinOut(); moveMoney(chip(seat), lucky, [{ seat, amount: -owed }], 3); }
+      }
+      break;
+    }
+  }
+}
+
+/** Keeps the last value for a moment after it goes away, so the buy card can shrink out. */
+function useLeaving(value: number | undefined, ms = 280) {
+  const last = useRef<number>(undefined), [leaving, setLeaving] = useState<number>();
+  useEffect(() => {
+    if (value !== undefined) { last.current = value; setLeaving(undefined); return; }
+    if (last.current === undefined) return;
+    setLeaving(last.current);
+    last.current = undefined;
+    const timer = setTimeout(() => setLeaving(undefined), ms);
+    return () => clearTimeout(timer);
+  }, [value, ms]);
+  return leaving;
+}
+
 /** The announcement bubble in the middle of the board; a purchase also shows the property's color and price. */
 function Announcement({ view, entry }: { view: TableView; entry: FeedEntry }) {
+  if (entry.kind === 'card') return null;
   const space = entry.kind === 'buy' && entry.space !== undefined ? spacesFor(view.theme)[entry.space] : undefined;
   const group = space?.group && space.group !== 'Public' ? space.group : undefined;
   return (
@@ -190,6 +251,10 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
   // Every token has finished its walk: the buy prompt and rent toasts wait for this.
   const landed = !die.tumbling && !!view && positions.every((at, index) => at === view.seats[index]?.position);
   const announcement = useAnnouncement(feed, landed);
+  // Once per announcement, with the table as it is when the announcement shows.
+  useEffect(() => { if (announcement && view) playEffect(announcement, view); }, [announcement]);
+  const buying = view?.phase === 'playing' && view.stage === 'buydecision' && landed ? view.seats[currentSeat(view)].position : undefined;
+  const leavingCard = useLeaving(buying);
   const prefix = demo ? '/demo' : '', home = demo ? '/demo' : '/', invite = `${location.origin}${prefix}/play/${table}/${nonce}`;
   useEffect(() => (current && seat >= 0 ? runCrank(table, signer) : undefined), [table, signer, current, seat]);
   const yourTurn = !!current && view.phase === 'playing' && view.stage === 'preroll' && seat >= 0 && seat === currentSeat(view);
@@ -292,7 +357,8 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
           {view.phase === 'lobby' && <section className="panel invite"><h2>Invite friends</h2><InviteBody invite={invite} size={132} /></section>}
 
           {view.phase === 'playing' && view.stage === 'buydecision' && landed && <PropertyCard view={view} space={view.seats[turnSeat].position} seat={seat}
-            heading={myTurn ? 'Buy this property?' : `${view.seats[turnSeat].name} is deciding`} />}
+            heading={myTurn ? 'Buy this property?' : `${view.seats[turnSeat].name} is deciding`} motion="in" />}
+          {leavingCard !== undefined && <PropertyCard view={view} space={leavingCard} seat={seat} heading="Decided" motion="out" />}
 
           {view.phase === 'playing' && (view.stage === 'tradeopen' || view.stage === 'tradeoffers') && seat >= 0 && <div className="pop">
             <TradeSheet view={view} seat={seat} now={now} busy={busy}
@@ -503,8 +569,8 @@ function InviteSheet({ invite, onClose }: { invite: string; onClose: () => void 
 const HOTEL = board.rules.maxBuildingsPerCity;
 const buildingLabel = (count: number) => count === HOTEL ? 'Hotel' : `${count} house${count > 1 ? 's' : ''}`;
 
-function PropertyCard({ view, space: index, seat, heading, onClose, children }: {
-  view: TableView; space: number; seat: number; heading: string; onClose?: () => void; children?: ReactNode;
+function PropertyCard({ view, space: index, seat, heading, onClose, motion, children }: {
+  view: TableView; space: number; seat: number; heading: string; onClose?: () => void; motion?: 'in' | 'out'; children?: ReactNode;
 }) {
   const space = spacesFor(view.theme)[index], lot = view.board[index];
   // Publics have no color on the board, so their deed header is ink.
@@ -521,7 +587,7 @@ function PropertyCard({ view, space: index, seat, heading, onClose, children }: 
     : [1, 2, 3, 4].map(count => [`Owner has ${count} of 4 public`, space.rent! * count] as [string, number]);
   const current = lot.owner === NO_OWNER ? -1 : rent(view, index);
   return (
-    <section className="panel deed" data-testid="property-card" data-space={index}>
+    <section className={`panel deed${motion ? ` card-${motion}` : ''}`} data-testid={motion === 'out' ? undefined : 'property-card'} data-space={index}>
       <header style={{ background: color, color: space.group && space.group !== 'Public' ? GROUP_INK[space.group] : '#FFFFFF' }}><small>{heading}</small><b>{space.name}</b>{onClose && <button className="close" onClick={onClose} aria-label="Close">×</button>}</header>
       <p className="deed-line">{space.group === 'Public' ? 'Public property' : `${space.group} group`}, price {money(space.price ?? 0)}{space.buildingCost ? `, houses and hotel ${money(space.buildingCost)} each` : '. No houses here: rent grows with each public property the owner holds.'}</p>
       <table><tbody>{ladder.map(([label, value]) => <tr key={label} className={value === current ? 'now' : ''}><td>{label}</td><td>{money(value)}</td></tr>)}</tbody></table>
@@ -628,6 +694,9 @@ function Results({ view, me, demo, home, openWallet }: { view: TableView; me: st
   const settled = view.phase === 'free', payouts = settled ? view.seats.map(seat => seat.payout) : expectedPayouts(view).payouts;
   const ranked = view.seats.map((seat, index) => ({ seat, index, payout: payouts[index] })).sort((a, b) => b.payout - a.payout || netWorth(view, b.index) - netWorth(view, a.index));
   const mine = ranked.find(item => item.seat.wallet === me);
+  // Once per results screen: a fanfare for the winner, a closing pair for everyone else.
+  const won = ranked[0]?.seat.wallet === me;
+  useEffect(() => { if (won) sounds.fanfare(); else sounds.gameOver(); }, []);
   return (
     <section className="panel results" data-testid="results" data-settled={settled ? 'yes' : 'no'}>
       <h2>{demo ? 'Final standings' : settled ? 'Paid out' : 'Game over, paying out…'}</h2>

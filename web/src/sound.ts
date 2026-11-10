@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 
 /** Table sounds, synthesized with Web Audio (no files): a clack per face while the die tumbles, a
- * thunk when it settles, a rising tick per space a token walks and a plonk where it lands. Muting
+ * thunk when it settles, a rising tick per space a token walks and a plonk where it lands, plus one
+ * for each kind of announcement (purchase, money in and out, jail, building, swaps, bankruptcy) and
+ * the end of the game. Muting
  * persists per browser. Browsers only start audio after a gesture, so the first tap unlocks it. */
 const KEY = 'bankroll.sound';
 let context: AudioContext | undefined, noise: AudioBuffer | undefined;
@@ -49,6 +51,12 @@ function tone(ctx: AudioContext, at: number, type: OscillatorType, from: number,
   oscillator.stop(at + length + 0.02);
 }
 
+/** A struck bell: a sine that rings out with a faint overtone. */
+function bell(ctx: AudioContext, at: number, frequency: number, peak: number, length: number) {
+  tone(ctx, at, 'sine', frequency, frequency, peak, length);
+  tone(ctx, at, 'sine', frequency * 2.76, frequency * 2.76, peak / 4, length / 2);
+}
+
 export const sounds = {
   /** One face of the tumbling die hitting the table. */
   clack() {
@@ -80,6 +88,83 @@ export const sounds = {
     if (!ctx) return;
     tone(ctx, ctx.currentTime, 'sine', 660, 640, 0.16, 0.16);
     tone(ctx, ctx.currentTime + 0.07, 'sine', 880, 860, 0.12, 0.2);
+  },
+  /** A purchase: the register drawer, then a two-bell "ka-ching". */
+  buy() {
+    const ctx = audio();
+    if (!ctx) return;
+    const at = ctx.currentTime;
+    burst(ctx, at, 2400, 3, 0.3, 0.06);
+    burst(ctx, at + 0.05, 1500, 4, 0.2, 0.05);
+    bell(ctx, at + 0.1, 1319, 0.16, 0.7);
+    bell(ctx, at + 0.18, 1760, 0.14, 0.9);
+  },
+  /** Money coming in: a quick rising sparkle. */
+  coinIn() {
+    const ctx = audio();
+    if (!ctx) return;
+    [1047, 1319, 1568, 2093].forEach((frequency, i) => bell(ctx, ctx.currentTime + i * 0.055, frequency, 0.11, 0.28));
+  },
+  /** Money going out: two soft falling notes. */
+  coinOut() {
+    const ctx = audio();
+    if (!ctx) return;
+    tone(ctx, ctx.currentTime, 'triangle', 660, 600, 0.13, 0.16);
+    tone(ctx, ctx.currentTime + 0.12, 'triangle', 494, 440, 0.13, 0.26);
+  },
+  /** Going to jail: a heavy metal door. Inharmonic partials ring over a thud. */
+  jail() {
+    const ctx = audio();
+    if (!ctx) return;
+    const at = ctx.currentTime;
+    burst(ctx, at, 700, 1.5, 0.4, 0.12);
+    tone(ctx, at, 'sine', 110, 70, 0.3, 0.3);
+    [523, 1137, 1789, 2456].forEach((frequency, i) => bell(ctx, at, frequency, 0.09 / (i + 1), 0.8));
+  },
+  /** A player going bankrupt: three sinking notes, the last one long. */
+  bankrupt() {
+    const ctx = audio();
+    if (!ctx) return;
+    const at = ctx.currentTime;
+    tone(ctx, at, 'triangle', 392, 370, 0.15, 0.3);
+    tone(ctx, at + 0.3, 'triangle', 349, 330, 0.15, 0.3);
+    tone(ctx, at + 0.6, 'triangle', 311, 233, 0.16, 0.9);
+  },
+  /** Building a house or hotel: two hammer taps. */
+  build() {
+    const ctx = audio();
+    if (!ctx) return;
+    for (const delay of [0, 0.14]) {
+      burst(ctx, ctx.currentTime + delay, 1300, 2, 0.35, 0.05);
+      tone(ctx, ctx.currentTime + delay, 'sine', 150, 90, 0.22, 0.09);
+    }
+  },
+  /** A completed swap: two bells together. */
+  trade() {
+    const ctx = audio();
+    if (!ctx) return;
+    bell(ctx, ctx.currentTime, 880, 0.12, 0.6);
+    bell(ctx, ctx.currentTime + 0.09, 1319, 0.12, 0.7);
+  },
+  /** A missed deadline: a short low buzz. */
+  strike() {
+    const ctx = audio();
+    if (ctx) tone(ctx, ctx.currentTime, 'square', 147, 139, 0.06, 0.25);
+  },
+  /** You won: a rising arpeggio that lands on a held chord. */
+  fanfare() {
+    const ctx = audio();
+    if (!ctx) return;
+    const at = ctx.currentTime;
+    [523, 659, 784].forEach((frequency, i) => tone(ctx, at + i * 0.12, 'triangle', frequency, frequency, 0.15, 0.2));
+    [523, 659, 784, 1047].forEach(frequency => tone(ctx, at + 0.38, 'triangle', frequency, frequency, 0.09, 1.1));
+  },
+  /** The game ended and someone else won: a gentle closing pair. */
+  gameOver() {
+    const ctx = audio();
+    if (!ctx) return;
+    tone(ctx, ctx.currentTime, 'triangle', 523, 523, 0.12, 0.3);
+    tone(ctx, ctx.currentTime + 0.22, 'triangle', 392, 392, 0.12, 0.6);
   },
 };
 
