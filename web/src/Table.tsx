@@ -155,7 +155,9 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
   const card = useDrawnCard(current ? view : undefined);
   const die = useDie(current ? view : undefined, requested);
   const positions = useTokenPositions(current ? view : undefined, die.settleAt);
-  const rentToast = useRentToast(feed, !die.tumbling && !!view && positions.every((at, index) => at === view.seats[index]?.position));
+  // Every token has finished its walk: the buy prompt and rent toasts wait for this.
+  const landed = !die.tumbling && !!view && positions.every((at, index) => at === view.seats[index]?.position);
+  const rentToast = useRentToast(feed, landed);
   const prefix = demo ? '/demo' : '', home = demo ? '/demo' : '/', invite = `${location.origin}${prefix}/play/${table}/${nonce}`;
   useEffect(() => (current && seat >= 0 ? runCrank(table, signer) : undefined), [table, signer, current, seat]);
   const yourTurn = !!current && view.phase === 'playing' && view.stage === 'preroll' && seat >= 0 && seat === currentSeat(view);
@@ -235,7 +237,7 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
         {rentToast && <p key={rentToast.at} className="rent-toast" role="status" data-testid="rent-toast">{rentToast.text}</p>}
           <SeatStrip view={view} me={me} />
           <Board view={view} positions={positions} highlights={highlights} selected={selected} onSelect={space => setSelected(space === selected ? undefined : space)}>
-            <Center view={view} seat={seat} myTurn={myTurn} left={left} now={now} busy={busy} die={die} card={card} timedOut={timedOut} demo={demo} home={home}
+            <Center view={view} seat={seat} myTurn={myTurn} left={left} now={now} busy={busy} die={die} landed={landed} card={card} timedOut={timedOut} demo={demo} home={home}
               onRoll={action('roll')} onBail={action('bail')} onStart={action('start')} onCancel={action('cancel')} onBuy={action('buy')} onPass={action('pass')} />
           </Board>
         </div>
@@ -257,7 +259,7 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
             onJoin={() => void run(async () => { await joinTable(table, nonce, name.trim(), view.entry); if (!demo) refresh(); })} />}
           {view.phase === 'lobby' && <section className="panel invite"><h2>Invite friends</h2><InviteBody invite={invite} size={132} /></section>}
 
-          {view.phase === 'playing' && view.stage === 'buydecision' && <PropertyCard view={view} space={view.seats[turnSeat].position} seat={seat}
+          {view.phase === 'playing' && view.stage === 'buydecision' && landed && <PropertyCard view={view} space={view.seats[turnSeat].position} seat={seat}
             heading={myTurn ? 'Buy this property?' : `${view.seats[turnSeat].name} is deciding`} />}
 
           {view.phase === 'playing' && (view.stage === 'tradeopen' || view.stage === 'tradeoffers') && seat >= 0 && <div className="pop">
@@ -297,9 +299,9 @@ function SoundToggle() {
   return <button type="button" className={`sound-toggle${muted ? ' off' : ''}`} data-testid="sound-toggle" aria-pressed={!muted} aria-label={muted ? 'Sound off' : 'Sound on'} onClick={toggle}><span className="label">{muted ? 'Sound off' : 'Sound on'}</span></button>;
 }
 
-function Center({ view, seat, myTurn, left, now, busy, die, card, timedOut, demo, home, onRoll, onBail, onStart, onCancel, onBuy, onPass }: {
+function Center({ view, seat, myTurn, left, now, busy, die, landed, card, timedOut, demo, home, onRoll, onBail, onStart, onCancel, onBuy, onPass }: {
   view: TableView; seat: number; myTurn: boolean; left: number; now: number; busy: boolean; die: { face: number; tumbling: boolean };
-  card?: { seat: number; card: number }; timedOut: boolean; demo: boolean; home: string; onRoll: () => void; onBail: () => void; onStart: () => void; onCancel: () => void;
+  landed: boolean; card?: { seat: number; card: number }; timedOut: boolean; demo: boolean; home: string; onRoll: () => void; onBail: () => void; onStart: () => void; onCancel: () => void;
   onBuy: () => void; onPass: () => void;
 }) {
   const turnSeat = currentSeat(view), who = view.seats[turnSeat];
@@ -353,7 +355,7 @@ function Center({ view, seat, myTurn, left, now, busy, die, card, timedOut, demo
       </div>
       {view.stage !== 'rolling' && view.stage !== 'ordering' && <p className="quiet" data-testid="countdown">{timedOut ? 'Timed out' : `${left}s left`}</p>}
       {slow && <p className="quiet">The roll is slow. Asking the oracle again…</p>}
-      {view.stage === 'buydecision' && (() => {
+      {view.stage === 'buydecision' && landed && (() => {
         const space = spacesFor(view.theme)[who.position], price = space.price ?? 0;
         return myTurn ? (
           <div className="decide">

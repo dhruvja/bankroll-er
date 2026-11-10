@@ -22,7 +22,7 @@ export interface Board {
 
 /** Frozen economy: 28 spaces, four houses and a hotel (sha256 495b4f28…, checked by tests/ts/board.test.ts). */
 export const board = boardJson as Board;
-export const BOARD_SHA256 = 'af6f5f4ff1a032bdcedf6a7375622d2861693f8146bc87309e3112f37ddc47ef';
+export const BOARD_SHA256 = '1e77ee1484297ac66a105be4a89b3e90c02a1559a11762ddead397eaf0bed319';
 export const isProperty = (space: BoardSpace) => space.kind === 'city' || space.kind === 'public';
 /** Client default only; the program accepts any of the three targets. */
 export const defaultTarget = (players: number) => board.rules.defaultTargetByPlayers[String(players)] ?? board.rules.targets[0];

@@ -4,18 +4,22 @@ import { spacesFor } from '../../shared/themes';
 import { NO_OWNER, rent, type TableView } from '../../shared/chain';
 import { sounds } from './sound';
 
-/** Bauhaus palette: seats are red, blue, yellow and black; each takes the ink in SEAT_INK on top. */
-export const SEAT_COLORS = ['#E03C28', '#1D4ED8', '#FFC21A', '#111111'];
-export const SEAT_INK = ['#FFFFFF', '#FFFFFF', '#111111', '#FFFFFF'];
-/** Each color group also has its own shape, so groups differ by more than hue. */
+/** Seat colors stay clear of every group color (an owned area's price strip turns its owner's color):
+ * pink, teal, black and silver, each with the ink in SEAT_INK on top. */
+export const SEAT_COLORS = ['#FF4FA3', '#00A99D', '#111111', '#A7B0BC'];
+export const SEAT_INK = ['#111111', '#111111', '#FFFFFF', '#111111'];
+/** Monopoly's group colors in board order. Each group also has its own shape, so groups differ by more than hue.
+ * Publics carry no color, as on the Monopoly board. */
 export const GROUP_COLORS: Record<string, string> = {
-  Brown: '#8B5A2B', Sky: '#1D4ED8', Pink: '#E86AA6', Orange: '#F07C1A', Teal: '#14A3A3', Green: '#1F8A4C', Purple: '#6B3FA0', Gold: '#FFC21A', Public: '#111111',
+  Brown: '#955436', 'Sky Blue': '#AAE0FA', Purple: '#8E44AD', Orange: '#F7941D', Red: '#ED1B24', Yellow: '#FEF200',
+  Green: '#1FB25A', 'Dark Blue': '#0072BB', Public: '#FFFFFF',
 };
 export const GROUP_INK: Record<string, string> = {
-  Brown: '#FFFFFF', Sky: '#FFFFFF', Pink: '#111111', Orange: '#111111', Teal: '#111111', Green: '#FFFFFF', Purple: '#FFFFFF', Gold: '#111111', Public: '#FFFFFF',
+  Brown: '#FFFFFF', 'Sky Blue': '#111111', Purple: '#FFFFFF', Orange: '#111111', Red: '#FFFFFF', Yellow: '#111111',
+  Green: '#111111', 'Dark Blue': '#FFFFFF', Public: '#111111',
 };
 const GROUP_SHAPES: Record<string, string> = {
-  Brown: 'square', Sky: 'circle', Pink: 'half', Orange: 'triangle', Teal: 'diamond', Green: 'quarter', Purple: 'ring', Gold: 'circle', Public: 'stripes',
+  Brown: 'square', 'Sky Blue': 'circle', Purple: 'half', Orange: 'triangle', Red: 'diamond', Yellow: 'quarter', Green: 'ring', 'Dark Blue': 'circle', Public: 'stripes',
 };
 export const money = (value: number) => `${value < 0 ? '−' : ''}$${Math.abs(value).toLocaleString('en-US')}`;
 
@@ -79,7 +83,8 @@ export function Board({ view, positions, highlights, selected, onSelect, childre
         const stack = view.seats.filter((other, at) => !other.eliminatedAt && (positions[at] ?? other.position) === (positions[index] ?? seat.position)).indexOf(seat);
         const corner = LOW_LABEL.has(spaces[at].kind) ? 1 : 0;
         const style = { '--row': row - 1, '--col': column - 1, '--stack': stack, '--corner': corner, background: SEAT_COLORS[index], color: SEAT_INK[index] } as CSSProperties;
-        return <span key={seat.wallet} className="token" style={style} data-testid={`token-${index}`} title={seat.name}>{seat.name.slice(0, 1).toUpperCase()}</span>;
+        // The hop animation alternates name with the space's parity, so each one-space step replays it.
+        return <span key={seat.wallet} className={`token hop-${at % 2}`} style={style} data-testid={`token-${index}`} title={seat.name}>{seat.name.slice(0, 1).toUpperCase()}</span>;
       })}
       <div className="rosette">{children}</div>
     </div></div>
@@ -95,9 +100,13 @@ export function Die({ face, tumbling }: { face: number; tumbling: boolean }) {
   );
 }
 
-/** The die keeps tumbling for at least 700 ms after a roll is requested, so the VRF round trip
- * (about 160–240 ms) reads as a throw rather than a flicker. Returns the face to show and the time
- * the die settles, which holds token movement until the number is visible. */
+/** Paced like Plato's Bankroll (timed from gameplay footage): the die tumbles for at least
+ * TUMBLE_MS after a roll is requested, so the VRF round trip (about 160–240 ms) reads as a throw,
+ * then rests on its face for FACE_HOLD_MS before the token sets off, one hop per STEP_MS. */
+const TUMBLE_MS = 1200, FACE_HOLD_MS = 650, STEP_MS = 300, FACE_FLIP_MS = 110;
+
+/** Returns the face to show and the time the token may start walking: the die has settled and its
+ * number has been on screen for FACE_HOLD_MS. */
 export function useDie(view: TableView | undefined, requested: boolean) {
   const rolling = view?.phase === 'playing' && (view.stage === 'rolling' || requested);
   const startedAt = useRef(0), settleAt = useRef(0);
@@ -107,21 +116,21 @@ export function useDie(view: TableView | undefined, requested: boolean) {
       if (!startedAt.current) startedAt.current = Date.now();
       settleAt.current = Number.MAX_SAFE_INTEGER;
       setTumbling(true);
-      const timer = setInterval(() => { setFace(1 + Math.floor(Math.random() * 6)); sounds.clack(); }, 90);
+      const timer = setInterval(() => { setFace(1 + Math.floor(Math.random() * 6)); sounds.clack(); }, FACE_FLIP_MS);
       return () => clearInterval(timer);
     }
-    const wait = Math.max(0, startedAt.current + 700 - Date.now()), thrown = startedAt.current > 0;
+    const wait = Math.max(0, startedAt.current + TUMBLE_MS - Date.now()), thrown = startedAt.current > 0;
     startedAt.current = 0;
-    settleAt.current = Date.now() + wait;
-    // The rattle keeps going for as long as the die still tumbles on screen.
-    const rattle = thrown ? setInterval(() => sounds.clack(), 90) : undefined;
-    const timer = setTimeout(() => { clearInterval(rattle); setTumbling(false); if (view?.lastRoll) setFace(view.lastRoll); if (thrown) sounds.settle(); }, wait);
-    return () => { clearTimeout(timer); clearInterval(rattle); };
+    settleAt.current = Date.now() + wait + (thrown ? FACE_HOLD_MS : 0);
+    // The die keeps tumbling (and rattling) until TUMBLE_MS is up.
+    const tumble = thrown ? setInterval(() => { setFace(1 + Math.floor(Math.random() * 6)); sounds.clack(); }, FACE_FLIP_MS) : undefined;
+    const timer = setTimeout(() => { clearInterval(tumble); setTumbling(false); if (view?.lastRoll) setFace(view.lastRoll); if (thrown) sounds.settle(); }, wait);
+    return () => { clearTimeout(timer); clearInterval(tumble); };
   }, [rolling, view?.lastRoll, view?.vrfNonce]);
   return { face, tumbling, settleAt };
 }
 
-/** Displayed token positions: a roll or a short card move walks space by space once the die has
+/** Displayed token positions: a roll or a short card move hops space by space once the die has
  * settled; anything longer (jail, move back) jumps. */
 export function useTokenPositions(view: TableView | undefined, settleAt: { current: number }) {
   const goal = useRef<number[]>([]);
@@ -135,7 +144,7 @@ export function useTokenPositions(view: TableView | undefined, settleAt: { curre
       const next = goal.current.map((target, seat) => {
         const at = previous[seat] ?? target;
         if (at === target) return at;
-        const ahead = (target - at + SPACES) % SPACES, to = ahead <= 9 ? (at + 1) % SPACES : target;
+        const ahead = (target - at + SPACES) % SPACES, to = ahead <= 12 ? (at + 1) % SPACES : target;
         if (to === target) landed = true; else stepLeft = Math.max(stepLeft, ahead - 1);
         return to;
       });
@@ -144,7 +153,7 @@ export function useTokenPositions(view: TableView | undefined, settleAt: { curre
       if (previous.length === next.length) { if (landed) sounds.land(); else if (stepLeft >= 0) sounds.step(stepLeft); }
       current.current = next;
       setShown(next);
-    }, 170);
+    }, STEP_MS);
     return () => clearInterval(timer);
   }, [settleAt]);
   return shown;

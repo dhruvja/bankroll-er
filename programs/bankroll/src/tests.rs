@@ -272,7 +272,7 @@ fn rent_that_bankrupts_eliminates_the_payer() {
     let owner = table.seats[1].cash;
     roll(&mut table, 1, T0 + 1);
     assert_eq!(table.seats[0].eliminated_at, 1, "-50 - 1200 leaves net worth below zero");
-    assert_eq!(table.seats[1].cash, owner + 1200, "New York, full Gold, 3 buildings: 40 x 30");
+    assert_eq!(table.seats[1].cash, owner + 1200, "New York, full Dark Blue, 3 buildings: 40 x 30");
     assert_eq!(table.phase, TablePhase::Finished);
     assert_eq!(table.payouts().unwrap(), [0, 1_940_000, 0, 0]);
 }
@@ -833,7 +833,7 @@ fn buildings_need_the_full_group_cap_at_a_hotel_and_scale_rent() {
     table.board[27] = Lot { owner: 1, buildings: 3 };
     table.board[25].owner = 1;
     table.board[26].owner = 1;
-    assert_eq!(table.rent(27), 1200, "New York, full Gold, 3 buildings: 40 x 30");
+    assert_eq!(table.rent(27), 1200, "New York, full Dark Blue, 3 buildings: 40 x 30");
     table.board[25].owner = NO_OWNER;
     assert_eq!(table.rent(27), 40, "a broken group keeps its buildings but pays base rent");
     assert!(table.build(wallets()[0], 5, T0 + 1).is_err());
@@ -905,7 +905,7 @@ fn negative_cash_blocks_buying_building_and_bail_but_not_selling_or_rolling() {
 
 #[test]
 fn both_bankruptcy_triggers_eliminate_and_free_holdings() {
-    // Gold full group: Tokyo rent 70 unbuilt, 140 with one building.
+    // Dark Blue full group: Tokyo rent 70 unbuilt, 140 with one building.
     let setup = |cash: i64, tokyo_buildings: u8, holdings: bool| {
         let mut table = playing(3, 7000);
         table.board[25] = Lot { owner: 1, buildings: tokyo_buildings };
@@ -939,7 +939,7 @@ fn both_bankruptcy_triggers_eliminate_and_free_holdings() {
 fn end_conditions_cover_last_standing_a_non_roller_reaching_target_and_ranking_above_it() {
     // The owner, not the roller, crosses the target on collected rent.
     let mut table = playing(3, 7000);
-    // Tokyo with 3 buildings in a full Gold group: rent 35 x 30 = 1050; holdings 350 + 600 + 350 + 400.
+    // Tokyo with 3 buildings in a full Dark Blue group: rent 35 x 30 = 1050; holdings 350 + 600 + 350 + 400.
     table.board[25] = Lot { owner: 1, buildings: 3 };
     table.board[26].owner = 1;
     table.board[27].owner = 1;

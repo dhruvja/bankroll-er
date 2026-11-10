@@ -176,6 +176,8 @@ legend { font-weight: 800; font-stretch: 75%; text-transform: uppercase; margin-
   flex: none; height: calc(3.6 * var(--u)); display: flex; align-items: center; justify-content: center;
   background: var(--group); color: var(--group-ink); font-weight: 800; font-size: clamp(7.5px, calc(2.1 * var(--u)), 14px); font-variant-numeric: tabular-nums;
 }
+/* Publics carry no color, so their white price strip needs a rule under it. */
+.cell.public:not(.owned) .cell-price { box-shadow: inset 0 calc(-0.4 * var(--u)) 0 var(--ink); }
 .cell.owned .cell-price { background: var(--owner); color: var(--owner-ink); box-shadow: inset 0 calc(-0.4 * var(--u)) 0 var(--ink); }
 .shape { position: absolute; left: calc(1 * var(--u)); top: calc(4.8 * var(--u)); width: calc(3 * var(--u)); height: calc(3 * var(--u)); background: var(--group); }
 .shape.circle { border-radius: 50%; }
@@ -211,8 +213,13 @@ legend { font-weight: 800; font-stretch: 75%; text-transform: uppercase; margin-
   border: calc(0.5 * var(--u)) solid var(--ink); box-shadow: 0 0 0 calc(0.3 * var(--u)) var(--white);
   left: calc(var(--pad) + var(--col) * (100cqi - 2 * var(--pad) + var(--gap)) / var(--cols) + 7.6 * var(--u) - var(--stack) * 3.4 * var(--u));
   top: calc(var(--pad) + var(--row) * (var(--h) - 2 * var(--pad) + var(--gap)) / var(--rows) + 4.4 * var(--u) - var(--corner, 0) * 3.6 * var(--u));
-  transition: left .16s ease-out, top .16s ease-out;
+  transition: left .26s ease-in-out, top .26s ease-in-out;
 }
+/* One hop per space: the token lifts and grows mid-step, then lands with a small squash. */
+.token.hop-0 { animation: hop-0 .3s ease-out; }
+.token.hop-1 { animation: hop-1 .3s ease-out; }
+@keyframes hop-0 { 45% { transform: translateY(calc(-2.6 * var(--u))) scale(1.22); } 85% { transform: scale(1.08, .9); } }
+@keyframes hop-1 { 45% { transform: translateY(calc(-2.6 * var(--u))) scale(1.22); } 85% { transform: scale(1.08, .9); } }
 /* The middle: a poster with a red disc and a blue square behind the action. */
 .rosette {
   grid-row: 2 / var(--rows); grid-column: 2 / var(--cols); display: grid; place-items: center; position: relative; overflow: hidden; background: var(--paper);
@@ -240,7 +247,10 @@ legend { font-weight: 800; font-stretch: 75%; text-transform: uppercase; margin-
   padding: calc(1.2 * var(--u)); gap: calc(0.4 * var(--u)); }
 .die i { border-radius: 50%; }
 .die i.on { background: var(--ink); }
-.die.tumbling { animation: tumble .36s linear infinite; }
+.die { animation: die-land .45s cubic-bezier(.3, 1.6, .5, 1); }
+.die.tumbling { animation: tumble .5s linear infinite; }
+/* The die drops onto its face: a bounce that reads as the throw finishing. */
+@keyframes die-land { 0% { transform: rotate(-25deg) scale(1.25); } 60% { transform: rotate(4deg) scale(.95); } }
 @keyframes tumble { 0% { transform: rotate(0) translateY(0); } 25% { transform: rotate(90deg) translateY(calc(-1.2 * var(--u))); } 50% { transform: rotate(180deg) translateY(0); } 75% { transform: rotate(270deg) translateY(calc(-1.2 * var(--u))); } 100% { transform: rotate(360deg); } }
 .lucky-reveal { background: var(--yellow); color: var(--ink); padding: calc(1.2 * var(--u)) calc(2 * var(--u)); display: flex; flex-direction: column; gap: calc(0.3 * var(--u));
   font-size: clamp(10px, calc(2.3 * var(--u)), 14px); border: calc(0.5 * var(--u)) solid var(--ink); animation: flip .5s ease-out; max-width: 100%; }
@@ -399,7 +409,7 @@ legend { font-weight: 800; font-stretch: 75%; text-transform: uppercase; margin-
   .table-head h1 { font-size: 1.7rem; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .die.tumbling, .cell.mark-give, .lucky-reveal { animation: none; }
+  .die, .die.tumbling, .token, .cell.mark-give, .lucky-reveal { animation: none; }
   .token, .progress i, .countdown .fill { transition: none; }
 }
 @media (max-width: 859px) {

@@ -717,7 +717,7 @@ fn a_late_callback_after_a_vrf_re_request_fails_and_a_jailed_roll_skips_the_orac
 fn bankruptcy_and_forfeit_rank_through_settle() {
     let mut h = Harness::new();
     h.playing(4, 7000);
-    // Seat 0 lands on seat 1's full-Gold Tokyo with 3 buildings ($1,050) holding $100: bankrupt.
+    // Seat 0 lands on seat 1's full-Dark-Blue Tokyo with 3 buildings ($1,050) holding $100: bankrupt.
     let mut table = h.read();
     table.board[25] = bankroll::Lot { owner: 1, buildings: 3 };
     table.board[26].owner = 1;
@@ -761,7 +761,7 @@ fn bankruptcy_and_forfeit_rank_through_settle() {
 fn the_worst_case_roll_callback_fits_the_vrf_callback_budget() {
     // A 6 lands on Lucky Card (21) and every card is drawn in turn. The move cards add the heaviest
     // landing: card 10 moves seat 0 onto seat 1's Power Plant (all four publics, $100) and card 11
-    // onto seat 1's Paris in a full Green group with 3 buildings ($780). Either rent takes seat 0
+    // onto seat 1's Paris in a full Yellow group with 3 buildings ($780). Either rent takes seat 0
     // below -$500 and releases seven holdings. Three seats remain, so every end condition is evaluated.
     let mut worst = 0;
     for card in 1..=12u8 {
