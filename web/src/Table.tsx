@@ -406,7 +406,7 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
 
           {view.phase === 'playing' && seat >= 0 && <Holdings view={view} seat={seat} buildNow={myTurn && view.stage === 'preroll'} onSelect={setSelected} />}
           {(view.phase === 'finished' || view.phase === 'free' && view.endedAt > 0) && <Results view={view} me={me} demo={demo} home={home} openWallet={openWallet} />}
-          {view.phase === 'free' && !view.endedAt && <section className="panel" data-testid="refunded"><h2>{demo ? 'Table closed' : 'Entries refunded'}</h2>
+          {view.phase === 'free' && !view.endedAt && <section className="panel" data-testid="refunded"><h2>{demo ? 'Lobby closed' : 'Entries refunded'}</h2>
             <p className="quiet">{demo ? 'The game never started.' : 'The game never started, so every entry went back to its play balance with no fee.'}</p>
             <button className="btn primary" onClick={() => navigate(home)}>Back to the tables</button></section>}
           {view.phase === 'refunding' && (demo ? <Closing view={view} /> : <div className="pop"><Refunding view={view} seat={seat} now={now} openWallet={openWallet} /></div>)}
