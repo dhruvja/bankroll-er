@@ -1,11 +1,12 @@
 import bs58 from 'bs58';
-import { Connection, PublicKey, SYSVAR_CLOCK_PUBKEY, Transaction, TransactionInstruction, type AccountInfo, type BlockhashWithExpiryBlockHeight, type Signer } from '@solana/web3.js';
+import { Connection, PublicKey, SYSVAR_CLOCK_PUBKEY, SystemProgram, Transaction, TransactionInstruction, type AccountInfo, type BlockhashWithExpiryBlockHeight, type Signer } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID, unpackAccount } from '@solana/spl-token';
 import { DELEGATION_PROGRAM_ID, EPHEMERAL_SPL_TOKEN_PROGRAM_ID } from '@magicblock-labs/ephemeral-rollups-sdk';
 import { BASE_RPC, DEVNET_GENESIS, ER_RPC, PUBLIC_VALIDATOR, invariant } from './config';
 import {
-  NO_OFFER, PHASE_OFFSET, PROGRAM_ID, accountsFor, buildInstruction, custodyAddress, custodyRecordAddress, decodeTable, delegationStatus, idl, isLiveCustodyRecord,
-  currentSeat, expectedPayouts, isActive, mintKey, settleRemaining, tableAddress, tokenAddress, u64, type TableView,
+  CLOSE_GRACE_SECONDS, NO_OFFER, PHASE_OFFSET, PHASES, PROGRAM_ID, accountsFor, buildInstruction, custodyAddress, custodyRecordAddress, decodeHouse, decodeTable,
+  delegationStatus, discriminator, houseAddress, idl, isLiveCustodyRecord, currentSeat, expectedPayouts, isActive, mintKey, settleRemaining, tableAddress,
+  tokenAddress, u64, type HouseView, type Phase, type TableView,
 } from './chain';
 import { board } from './board';
 import type { PaymentClient } from './sponsored';
@@ -35,7 +36,7 @@ export class BankrollClient implements PaymentClient {
   private blockhash?: { value: BlockhashWithExpiryBlockHeight; expires: number };
   private identity?: Promise<void>;
   private genesis?: Promise<void>;
-  private routed = new Set<string>();
+  private route?: Promise<void>;
 
   constructor(options: { baseRpc?: string; erRpc?: string } = {}) {
     this.base = new Connection(options.baseRpc || BASE_RPC, 'confirmed');
@@ -57,13 +58,14 @@ export class BankrollClient implements PaymentClient {
     })().catch(error => { this.identity = undefined; throw error; });
     return this.identity;
   }
-  /** A table must be routed by the router to the pinned validator behind this ER endpoint. */
-  async verifyTableRoute(table: PublicKey) {
-    if (this.routed.has(table.toBase58())) return;
-    const status = await delegationStatus(table);
-    invariant(status.isDelegated && status.delegationRecord?.authority === PUBLIC_VALIDATOR && status.fqdn
-      && new URL(status.fqdn).origin === new URL(this.erRpc).origin, 'This table belongs to another rollup.');
-    this.routed.add(table.toBase58());
+  /** Tables are ER-only and never delegated, so the route is the house's: the router must send it
+   * to the pinned validator behind this ER endpoint, where every table and the vault live. */
+  verifyRoute() {
+    this.route ??= delegationStatus(houseAddress()).then(status => {
+      invariant(status.isDelegated && status.delegationRecord?.authority === PUBLIC_VALIDATOR && status.fqdn
+        && new URL(status.fqdn).origin === new URL(this.erRpc).origin, 'The Bankroll house belongs to another rollup.');
+    }).catch(error => { this.route = undefined; throw error; });
+    return this.route;
   }
 
   /** Base USDC, play (ER) USDC and base lamports, as bomberman reads them. */
@@ -128,27 +130,37 @@ export class BankrollClient implements PaymentClient {
     return () => { closed = true; void this.er.removeAccountChangeListener(id).catch(() => {}); };
   }
 
-  /** Free tables on the ER, via `getProgramAccounts` filtered on `phase == Free`. */
-  async findFreeTables(): Promise<TableView[]> {
+  /** The host's table, or undefined when it doesn't exist (never opened, or closed). */
+  async findTable(host: PublicKey): Promise<TableView | undefined> {
+    const address = tableAddress(host), account = await this.er.getAccountInfo(address, 'confirmed');
+    return account?.owner.equals(PROGRAM_ID) ? decodeTable(address, account.data) : undefined;
+  }
+
+  /** Every live table on the ER (`getProgramAccounts` on the EphemeralTable discriminator), or
+   * only those in `phase`. */
+  async listTables(phase?: Phase): Promise<TableView[]> {
     await this.verifyPublicRollup();
-    const accounts = await this.er.getProgramAccounts(PROGRAM_ID, { commitment: 'confirmed', filters: [
-      { memcmp: { offset: 0, bytes: bs58.encode(Buffer.from(idl.accounts!.find(item => item.name === 'Table')!.discriminator)) } },
-      { memcmp: { offset: PHASE_OFFSET, bytes: bs58.encode(Buffer.from([0])) } },
-    ] });
+    const filters = [{ memcmp: { offset: 0, bytes: discriminator('EphemeralTable') } }];
+    if (phase) filters.push({ memcmp: { offset: PHASE_OFFSET, bytes: bs58.encode(Buffer.from([PHASES.indexOf(phase)])) } });
+    const accounts = await this.er.getProgramAccounts(PROGRAM_ID, { commitment: 'confirmed', filters });
     const tables: TableView[] = [];
     for (const { pubkey, account } of accounts) {
       try { tables.push(decodeTable(pubkey, account.data)); } catch { /* Not a canonical table. */ }
     }
-    return tables.filter(table => table.phase === 'free').sort((a, b) => a.index - b.index);
+    return tables.sort((a, b) => a.address.localeCompare(b.address));
   }
 
-  async readTables(count: number): Promise<TableView[]> {
-    const addresses = Array.from({ length: count }, (_, index) => tableAddress(index));
-    const accounts = await this.er.getMultipleAccountsInfo(addresses, 'confirmed');
-    return accounts.map((account, index) => {
-      invariant(account && account.owner.equals(PROGRAM_ID), `Table ${index} is not on the public rollup.`);
-      return decodeTable(addresses[index], account.data);
-    });
+  /** Lobbies a wallet can still join at ER time `now`, soonest deadline first. */
+  async listLobbies(now: number): Promise<TableView[]> {
+    return (await this.listTables('lobby')).filter(table => table.lobbyDeadline > now && table.playerCount < table.maxPlayers)
+      .sort((a, b) => a.lobbyDeadline - b.lobbyDeadline);
+  }
+
+  /** The house on the ER: its liability and table count, and its lamports (the table rent budget). */
+  async readHouse(): Promise<HouseView & { lamports: number }> {
+    const account = await this.er.getAccountInfo(houseAddress(), 'confirmed');
+    invariant(account && account.owner.equals(PROGRAM_ID), 'The house is not on the public rollup.');
+    return { ...decodeHouse(account.data), lamports: account.lamports };
   }
 
   private async erBlockhash(fresh = false) {
@@ -180,14 +192,49 @@ export class BankrollClient implements PaymentClient {
     throw new Error(`${label} was not confirmed on the rollup: ${signature}`);
   }
 
+  private verified() { return Promise.all([this.verifyDevnet(), this.verifyPublicRollup(), this.verifyRoute()]); }
   private async act(label: string, name: Parameters<typeof buildInstruction>[0], table: PublicKey, signer: Signer, args: Record<string, unknown> = {}, recipient?: PublicKey, remaining: Parameters<typeof buildInstruction>[3] = []) {
-    await Promise.all([this.verifyDevnet(), this.verifyPublicRollup(), this.verifyTableRoute(table)]);
+    await this.verified();
     return this.sendEr(label, [buildInstruction(name, accountsFor(table, signer.publicKey, recipient), args, remaining)], signer);
   }
-  openTable(table: PublicKey, host: Signer, options: { name: string; entry: number; maxPlayers: number; target: number; theme?: number; startCash?: number }) {
-    return this.act('open', 'open_table', table, host, { name: options.name, entry: u64(options.entry), max_players: options.maxPlayers, target: u64(options.target),
-      theme: options.theme ?? 0, start_cash: u64(options.startCash ?? board.rules.startCash) });
+
+  /** Opens the host's own table (`tableAddress(host)`): the first time, the house creates it on the
+   * ER; after a game it re-opens in place. If SOL sent to that address on base blocks the create,
+   * `unblocker` (any funded base wallet, e.g. the public faucet) sweeps it with `unblock_table`,
+   * keeping the lamports, and the open is retried once. `unblocked` is that base signature. */
+  async openTable(host: Signer, options: { name: string; entry: number; maxPlayers: number; target: number; theme?: number; startCash?: number }, unblocker?: Signer)
+    : Promise<SentTransaction & { table: PublicKey; unblocked?: string }> {
+    const table = tableAddress(host.publicKey);
+    const open = () => this.act('open', 'open_table', table, host, { name: options.name, entry: u64(options.entry), max_players: options.maxPlayers,
+      target: u64(options.target), theme: options.theme ?? 0, start_cash: u64(options.startCash ?? board.rules.startCash) });
+    try { return { ...await open(), table }; }
+    catch (error) {
+      if (!unblocker || !(error instanceof ProgramError) || !/InvalidAccountData/.test(error.message) || !(await this.blocked(host.publicKey))) throw error;
+    }
+    const unblocked = await this.unblockTable(host.publicKey, unblocker);
+    // The ER re-reads the swept address from base before it can create the table there.
+    for (let attempt = 0; attempt < 50 && (await this.er.getAccountInfo(table, 'confirmed'))?.lamports; attempt++) await pause(200);
+    return { ...await open(), table, unblocked };
   }
+  /** Whether base shows the host's table address as a funded system account (audit F-1). */
+  async blocked(host: PublicKey): Promise<boolean> {
+    const account = await this.base.getAccountInfo(tableAddress(host), 'confirmed');
+    return !!account && account.owner.equals(SystemProgram.programId) && account.data.length === 0 && account.lamports > 0;
+  }
+  /** Base layer: sweeps SOL that blocks `host`'s table address to `caller`, who signs and pays. */
+  async unblockTable(host: PublicKey, caller: Signer): Promise<string> {
+    await this.verifyDevnet();
+    const latest = await this.base.getLatestBlockhash('confirmed');
+    const transaction = new Transaction({ feePayer: caller.publicKey, ...latest })
+      .add(buildInstruction('unblock_table', accountsFor(tableAddress(host), caller.publicKey), { host }));
+    transaction.sign(caller);
+    const signature = await this.base.sendRawTransaction(transaction.serialize(), { maxRetries: 3 });
+    const result = await this.base.confirmTransaction({ signature, ...latest }, 'confirmed');
+    invariant(!result.value.err, `unblock_table failed: ${signature} ${JSON.stringify(result.value.err)}`);
+    return signature;
+  }
+  /** Anyone deletes a Free, empty table once its close grace has passed; the rent returns to the house. */
+  closeTable(table: PublicKey, signer: Signer) { return this.act('close', 'close_table', table, signer); }
   joinTable(table: PublicKey, player: Signer, nonce: number, name: string) {
     return this.act('join', 'join_table', table, player, { expected_nonce: u64(nonce), name });
   }
@@ -209,7 +256,7 @@ export class BankrollClient implements PaymentClient {
   /** Refunds one seat. Its ATA is passed writable when live; when it is gone it is passed read-only,
    * which the program accepts only after the refund grace and pays to the treasury instead. */
   async refund(table: PublicKey, signer: Signer, view: TableView, seat: number) {
-    await Promise.all([this.verifyDevnet(), this.verifyPublicRollup(), this.verifyTableRoute(table)]);
+    await this.verified();
     const wallet = new PublicKey(view.seats[seat].wallet);
     const instruction = buildInstruction('refund_player', accountsFor(table, signer.publicKey, wallet), { seat });
     const token = instruction.keys.find(key => key.pubkey.equals(tokenAddress(wallet)));
@@ -233,7 +280,7 @@ export class BankrollClient implements PaymentClient {
   }
   /** One transaction: end an abandoned game by ranking (`force_timeout` past the idle deadline) and settle it. */
   async endIdleAndSettle(table: PublicKey, signer: Signer, view: TableView) {
-    await Promise.all([this.verifyDevnet(), this.verifyPublicRollup(), this.verifyTableRoute(table)]);
+    await this.verified();
     const { payouts } = expectedPayouts(view);
     const writable = await Promise.all(view.seats.map((seat, index) => payouts[index] > 0 ? this.payable(new PublicKey(seat.wallet)) : false));
     const accounts = accountsFor(table, signer.publicKey);
@@ -247,7 +294,7 @@ export class BankrollClient implements PaymentClient {
 }
 
 /** What a participant's client should send next for liveness, or nothing yet. */
-export type CrankAction = 'timeout' | 'idle-settle' | 'retry-roll' | 'retry-start' | 'settle' | 'expire' | 'refund';
+export type CrankAction = 'timeout' | 'idle-settle' | 'retry-roll' | 'retry-start' | 'settle' | 'expire' | 'refund' | 'close';
 export function nextCrank(table: TableView, wallet: string, now: number): { action: CrankAction; at: number } | undefined {
   const rules = board.rules.deadlinesSec, seat = table.seats.findIndex(item => item.wallet === wallet);
   if (seat < 0) return undefined;
@@ -276,7 +323,8 @@ export function nextCrank(table: TableView, wallet: string, now: number): { acti
       const emptyOffers = table.stage === 'tradeoffers' && table.trade.offers.every(offer => offer === NO_OFFER);
       return { action: 'timeout', at: Math.min(idle, emptyOffers ? table.trade.deadline : table.stageDeadline) };
     }
-    default: return undefined;
+    // A Free table that holds nothing closes once its grace has passed, returning its rent to the house.
+    case 'free': return table.held === 0 && table.freedAt > 0 ? { action: 'close', at: table.freedAt + CLOSE_GRACE_SECONDS } : undefined;
   }
 }
 
@@ -299,6 +347,7 @@ export function startCrank(client: BankrollClient, address: PublicKey, signer: S
       : action === 'retry-start' ? client.startGame(address, signer)
       : action === 'settle' ? client.settle(address, signer, view)
       : action === 'expire' ? client.cancel(address, signer)
+      : action === 'close' ? client.closeTable(address, signer)
       : client.refundPending(address, signer, view, now).then(sent => sent[0]);
     void send.then(sent => {
       if (sent) { handled = view; onSent(sent); } else if (action === 'refund') quietUntil = Math.max(now + 10, Math.min(view.stageDeadline, now + 60));

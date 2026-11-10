@@ -1,5 +1,6 @@
 import { BorshAccountsCoder, BorshInstructionCoder, type Idl } from '@anchor-lang/core';
 import BN from 'bn.js';
+import bs58 from 'bs58';
 import { PublicKey, SystemProgram, SYSVAR_SLOT_HASHES_PUBKEY, TransactionInstruction, type AccountMeta } from '@solana/web3.js';
 import { TOKEN_PROGRAM_ID, getAssociatedTokenAddressSync } from '@solana/spl-token';
 import {
@@ -16,18 +17,26 @@ export const mintKey = new PublicKey(DEVNET_USDC);
 export const NO_OWNER = 255;
 /** `Trade.offers` entry for "no offer" (space 0, Start, is never a property). */
 export const NO_OFFER = 0;
-/** Byte offset of `Table.phase` (8-byte discriminator, u16 index, u8 bump). */
-export const PHASE_OFFSET = 11;
+/** Byte offset of `EphemeralTable.phase` (8-byte discriminator, u8 bump). */
+export const PHASE_OFFSET = 9;
+/** Bytes of an EphemeralTable account (`TABLE_SPACE` in state.rs) and the ER rent the house pays
+ * for it while it is open, `(len + 60) * 32` lamports, refunded when it closes. */
+export const TABLE_SPACE = 566;
+export const TABLE_RENT = (TABLE_SPACE + 60) * 32;
+/** Bytes of the House account (`HOUSE_SPACE`); the house keeps this account's rent-exempt minimum. */
+export const HOUSE_SPACE = 89;
+/** Mirrors `CLOSE_GRACE_SECONDS`: a Free table stays readable this long after `freed_at`. */
+export const CLOSE_GRACE_SECONDS = 600;
 export const PHASES = ['free', 'lobby', 'playing', 'finished', 'refunding'] as const;
 export const STAGES = ['idle', 'ordering', 'preroll', 'rolling', 'buydecision', 'tradeopen', 'tradeoffers'] as const;
 export type Phase = typeof PHASES[number];
 export type StageName = typeof STAGES[number];
 
-export const tableAddress = (index: number, program = PROGRAM_ID) => {
-  invariant(Number.isInteger(index) && index >= 0 && index <= 0xffff, 'Invalid table index.');
-  const seed = Buffer.alloc(2); seed.writeUInt16LE(index);
-  return PublicKey.findProgramAddressSync([Buffer.from('table_v2'), seed], program)[0];
-};
+/** A host's table: one per wallet, created on the ER by its first `open_table`. */
+export const tableAddress = (host: PublicKey, program = PROGRAM_ID) =>
+  PublicKey.findProgramAddressSync([Buffer.from('table_v3'), host.toBuffer()], program)[0];
+/** The house: rent sponsor of every table and authority of the shared vault (its USDC custody). */
+export const houseAddress = (program = PROGRAM_ID) => PublicKey.findProgramAddressSync([Buffer.from('house')], program)[0];
 export const treasuryAddress = (program = PROGRAM_ID) => PublicKey.findProgramAddressSync([Buffer.from('treasury')], program)[0];
 export const tokenAddress = (owner: PublicKey) => getAssociatedTokenAddressSync(mintKey, owner, true);
 export const custodyAddress = (owner: PublicKey) => deriveEphemeralAta(owner, mintKey)[0];
@@ -50,11 +59,11 @@ interface RawSeat {
   jail_turns: number; strikes: number; eliminated_at: number; payout: BN;
 }
 interface RawTable {
-  index: number; bump: number; phase: Record<string, unknown>; game_nonce: BN; vrf_nonce: BN; host: PublicKey;
+  bump: number; phase: Record<string, unknown>; game_nonce: BN; vrf_nonce: BN; host: PublicKey; held: BN;
   entry: BN; max_players: number; target: BN; player_count: number; lobby_deadline: BN; last_action_at: BN;
   stage: Record<string, unknown>; stage_deadline: BN; turn: number; order: number[]; round: number;
   rolls_this_turn: number; extra_roll: boolean; vrf_purpose: Record<string, unknown>; vrf_requested_at: BN;
-  last_roll: number; last_card: number; elimination_seq: number; ended_at: BN;
+  last_roll: number; last_card: number; elimination_seq: number; ended_at: BN; freed_at: BN;
   seats: RawSeat[]; board: { owner: number; buildings: number }[];
   trade: { space: number; offers: number[]; deadline: BN };
   theme: number;
@@ -67,13 +76,18 @@ export interface SeatView {
 }
 /** Normalized Table snapshot. Times are unix seconds; token amounts are atoms. */
 export interface TableView {
-  address: string; index: number; phase: Phase; gameNonce: number; vrfNonce: number; host: string;
+  address: string; phase: Phase; gameNonce: number; vrfNonce: number; host: string;
+  /** Atoms of the shared vault this table holds: entries paid in, less everything paid out. */
+  held: number;
   entry: number; maxPlayers: number; target: number; playerCount: number; lobbyDeadline: number;
   lastActionAt: number; stage: StageName; stageDeadline: number; turn: number; order: number[]; round: number;
   rollsThisTurn: number; extraRoll: boolean; vrfPending: boolean; vrfRequestedAt: number; lastRoll: number;
   /** Lucky card (1–12) drawn by the latest roll, 0 when none. */
   lastCard: number;
-  eliminationSeq: number; endedAt: number; seats: SeatView[]; board: { owner: number; buildings: number }[];
+  eliminationSeq: number; endedAt: number;
+  /** When the table last became Free (settled, or its last refund); it may close a grace later. */
+  freedAt: number;
+  seats: SeatView[]; board: { owner: number; buildings: number }[];
   /** Live only in `tradeoffers`: the lander's offered space, each seat's counter-offer (`NO_OFFER`
    * for none) and when offers close. The lander may decide until `stageDeadline`. */
   trade: { space: number; offers: number[]; deadline: number };
@@ -86,18 +100,19 @@ export interface TableView {
 const variant = (value: Record<string, unknown>) => Object.keys(value)[0].replaceAll('_', '').toLowerCase();
 
 export function decodeTable(address: PublicKey, data: Buffer): TableView {
-  const raw = new BorshAccountsCoder(idl).decode('Table', data) as RawTable;
-  invariant(tableAddress(raw.index).equals(address), 'Account is not the canonical table for its index.');
+  const raw = new BorshAccountsCoder(idl).decode('EphemeralTable', data) as RawTable;
+  invariant(tableAddress(raw.host).equals(address), 'Account is not the canonical table of its host.');
   const count = raw.player_count;
   return {
-    address: address.toBase58(), index: raw.index, phase: variant(raw.phase) as Phase,
-    gameNonce: raw.game_nonce.toNumber(), vrfNonce: raw.vrf_nonce.toNumber(), host: raw.host.toBase58(),
+    address: address.toBase58(), phase: variant(raw.phase) as Phase,
+    gameNonce: raw.game_nonce.toNumber(), vrfNonce: raw.vrf_nonce.toNumber(), host: raw.host.toBase58(), held: raw.held.toNumber(),
     entry: raw.entry.toNumber(), maxPlayers: raw.max_players, target: raw.target.toNumber(), playerCount: count,
     lobbyDeadline: raw.lobby_deadline.toNumber(), lastActionAt: raw.last_action_at.toNumber(),
     stage: variant(raw.stage) as StageName, stageDeadline: raw.stage_deadline.toNumber(), turn: raw.turn,
     order: raw.order.slice(0, count), round: raw.round, rollsThisTurn: raw.rolls_this_turn, extraRoll: raw.extra_roll,
     vrfPending: variant(raw.vrf_purpose) !== 'none', vrfRequestedAt: raw.vrf_requested_at.toNumber(),
     lastRoll: raw.last_roll, lastCard: raw.last_card, eliminationSeq: raw.elimination_seq, endedAt: raw.ended_at.toNumber(),
+    freedAt: raw.freed_at.toNumber(),
     seats: raw.seats.slice(0, count).map(seat => ({
       wallet: seat.wallet.toBase58(), name: Buffer.from(seat.name).toString('utf8').replace(/\0+$/, ''),
       refunded: seat.refunded, cash: seat.cash.toNumber(), position: seat.position, jailTurns: seat.jail_turns, strikes: seat.strikes,
@@ -110,6 +125,14 @@ export function decodeTable(address: PublicKey, data: Buffer): TableView {
     startCash: raw.start_cash.toNumber() || board.rules.startCash,
   };
 }
+
+export interface HouseView { liability: bigint; tablesCreated: bigint }
+export function decodeHouse(data: Buffer): HouseView {
+  const raw = new BorshAccountsCoder(idl).decode('House', data) as { liability: BN; tables_created: BN };
+  return { liability: BigInt(raw.liability.toString()), tablesCreated: BigInt(raw.tables_created.toString()) };
+}
+/** The account discriminator `getProgramAccounts` filters on, base58. */
+export const discriminator = (name: 'EphemeralTable' | 'House') => bs58.encode(Buffer.from(idl.accounts!.find(item => item.name === name)!.discriminator));
 
 export const currentSeat = (table: TableView) => table.order[table.turn] ?? 0;
 export const isActive = (table: TableView, seat: number) => seat < table.playerCount && table.seats[seat].eliminatedAt === 0;
@@ -179,26 +202,28 @@ export function expectedPayouts(table: TableView): { payouts: number[]; treasury
   return { payouts, treasury: pot - payouts.reduce((sum, value) => sum + value, 0) };
 }
 
-export type InstructionName = 'create_table' | 'delegate_table' | 'open_table' | 'join_table' | 'cancel_or_expire' | 'refund_player'
+export type InstructionName = 'init_house' | 'delegate_house' | 'open_table' | 'join_table' | 'close_table' | 'unblock_table' | 'cancel_or_expire' | 'refund_player'
   | 'start_game' | 'roll' | 'buy' | 'pass' | 'build' | 'sell' | 'pay_bail' | 'forfeit' | 'open_trade' | 'offer_trade' | 'accept_trade'
   | 'force_timeout' | 'settle' | 'withdraw_fees';
 
-/** Every account name the IDL uses, resolved for one table and one acting wallet. */
+/** Every account name the IDL uses, resolved for one table and one acting wallet. Money moves
+ * through the house's vault, and the ER check reads the house's delegation record (an ephemeral
+ * table is never delegated). Fixed addresses (rent vault, magic program) come from the IDL. */
 export function accountsFor(table: PublicKey, actor: PublicKey, recipient = actor): Record<string, PublicKey> {
-  const treasury = treasuryAddress();
+  const treasury = treasuryAddress(), house = houseAddress();
   return {
-    admin: actor, player: actor, signer: actor, payer: actor, table, treasury,
+    admin: actor, player: actor, signer: actor, payer: actor, host: actor, caller: actor, table, house, treasury,
     admin_token: tokenAddress(actor), admin_eata: custodyAddress(actor),
-    delegation_record: delegationRecordPdaFromDelegatedAccount(table),
-    player_token: tokenAddress(recipient), table_token: tokenAddress(table), treasury_token: tokenAddress(treasury),
-    table_eata: custodyAddress(table), player_eata: custodyAddress(recipient),
+    delegation_record: delegationRecordPdaFromDelegatedAccount(house),
+    player_token: tokenAddress(recipient), vault_token: tokenAddress(house), treasury_token: tokenAddress(treasury),
+    vault_eata: custodyAddress(house), player_eata: custodyAddress(recipient),
     player_custody_record: custodyRecordAddress(recipient), treasury_eata: custodyAddress(treasury),
     token_program: TOKEN_PROGRAM_ID, system_program: SystemProgram.programId,
     oracle_queue: new PublicKey(EPHEMERAL_QUEUE), vrf_program: new PublicKey(VRF_PROGRAM), slot_hashes: SYSVAR_SLOT_HASHES_PUBKEY,
     program_identity: PublicKey.findProgramAddressSync([Buffer.from('identity')], PROGRAM_ID)[0],
-    buffer_table: delegateBufferPdaFromDelegatedAccountAndOwnerProgram(table, PROGRAM_ID),
-    delegation_record_table: delegationRecordPdaFromDelegatedAccount(table),
-    delegation_metadata_table: delegationMetadataPdaFromDelegatedAccount(table),
+    buffer_house: delegateBufferPdaFromDelegatedAccountAndOwnerProgram(house, PROGRAM_ID),
+    delegation_record_house: delegationRecordPdaFromDelegatedAccount(house),
+    delegation_metadata_house: delegationMetadataPdaFromDelegatedAccount(house),
     owner_program: PROGRAM_ID, delegation_program: DELEGATION_PROGRAM_ID,
   };
 }
@@ -231,7 +256,7 @@ export async function delegationStatus(account: PublicKey): Promise<DelegationSt
     signal: AbortSignal.timeout(10_000),
   });
   const body = await response.json() as { error?: unknown; result?: DelegationStatus };
-  invariant(!body.error && body.result, 'Unable to locate the table’s public rollup.');
+  invariant(!body.error && body.result, 'Unable to locate the account’s public rollup.');
   if (body.result.fqdn) {
     const url = new URL(body.result.fqdn);
     invariant(url.protocol === 'https:' && url.hostname.endsWith('.magicblock.app') && !url.hostname.includes('tee'), 'Unexpected public rollup route.');
