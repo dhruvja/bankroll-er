@@ -2,10 +2,10 @@ import bs58 from 'bs58';
 import { Keypair, PublicKey, Transaction, sendAndConfirmTransaction } from '@solana/web3.js';
 import { createAssociatedTokenAccountIdempotentInstruction, createTransferInstruction } from '@solana/spl-token';
 import { DEMO_ENTRY, DEVNET_USDC, ER_RPC, RELAY_FEE, TOKEN_SCALE, WITHDRAW_MINIMUM, invariant } from '../../../shared/config';
-import { BankrollClient, ProgramError, startCrank, type SentTransaction } from '../../../shared/client';
+import { BankrollClient, startCrank, type SentTransaction } from '../../../shared/client';
 import { SponsoredPayments } from '../../../shared/sponsored';
 import { depositForEntry } from '../../../shared/funding';
-import { PHASE_OFFSET, PROGRAM_ID, decodeTable, idl, tokenAddress, type TableView } from '../../../shared/chain';
+import { CLOSE_GRACE_SECONDS, PROGRAM_ID, decodeTable, tokenAddress, type TableView } from '../../../shared/chain';
 import { openWallet } from './wallet';
 
 export const client = new BankrollClient({ baseRpc: import.meta.env.VITE_BANKROLL_BASE_RPC });
@@ -80,20 +80,28 @@ async function fundEntry(owner: Keypair, entry: number) {
   });
 }
 
-export async function openTable(options: { name: string; entry: number; maxPlayers: number; target: number; theme: number; startCash: number }) {
-  const host = await wallet();
+/** Opens the host's own table: the rollup creates it the first time, and after a game it re-opens in
+ * place with a new nonce. A wallet hosts one table at a time, so a table of yours that is still in a
+ * game comes back as `hosting` (nothing is paid or sent) for the page to offer a way back to it. If
+ * SOL sent to your table address blocks the create, the faucet sweeps it and the open is retried. */
+export async function openTable(options: { name: string; entry: number; maxPlayers: number; target: number; theme: number; startCash: number })
+  : Promise<{ table: string; nonce: number; hosting?: TableView }> {
+  const host = await wallet(), hosted = await client.findTable(host.publicKey);
+  if (hosted && hosted.phase !== 'free') return { table: hosted.address, nonce: hosted.gameNonce, hosting: hosted };
   await fundEntry(host, options.entry);
-  for (const table of await client.findFreeTables()) {
-    try {
-      const address = new PublicKey(table.address);
-      record(await client.openTable(address, host, options));
-      return { table: table.address, nonce: (await client.readTable(address)).gameNonce };
-    } catch (error) {
-      // Another host claimed this table between the read and the send; try the next one.
-      if (!(error instanceof ProgramError && error.message.startsWith('InvalidPhase'))) throw error;
-    }
+  const opened = record(await client.openTable(host, options, faucet));
+  return { table: opened.table.toBase58(), nonce: (await client.readTable(opened.table)).gameNonce };
+}
+
+/** Your own table when it exists. One that sits Free past its close grace is closed on the way (its rent
+ * goes back to the house); the table page's crank normally does that, but only while someone has it open. */
+export async function hostedTable(): Promise<TableView | undefined> {
+  const host = await wallet(), hosted = await client.findTable(host.publicKey);
+  if (hosted?.phase === 'free' && hosted.held === 0 && hosted.freedAt > 0 && Date.now() / 1000 > hosted.freedAt + CLOSE_GRACE_SECONDS + 5) {
+    void client.closeTable(new PublicKey(hosted.address), host).then(record, () => {});
+    return undefined;
   }
-  throw new Error('Every table is busy. Try again in a few minutes.');
+  return hosted;
 }
 
 export async function joinTable(table: string, nonce: number, name: string, entry: number) {
@@ -136,22 +144,18 @@ export function runCrank(table: string, signer: Keypair) {
 
 /** Signatures this tab sent, with what they did, so the transaction log can name them. */
 const sentLabels = new Map<string, string>();
-function record(sent: SentTransaction) { sentLabels.set(sent.signature, sent.label); console.debug('bankroll sent', sent.label, sent.signature); return sent; }
+function record<T extends SentTransaction>(sent: T): T { sentLabels.set(sent.signature, sent.label); console.debug('bankroll sent', sent.label, sent.signature); return sent; }
 export const sentLabel = (signature: string) => sentLabels.get(signature);
 
-/** Tables waiting for players (phase Lobby), read straight from the rollup. */
-export async function listLobbies(): Promise<TableView[]> {
-  await client.verifyPublicRollup();
-  const discriminator = idl.accounts!.find(item => item.name === 'Table')!.discriminator;
-  const accounts = await client.er.getProgramAccounts(PROGRAM_ID, { commitment: 'confirmed', filters: [
-    { memcmp: { offset: 0, bytes: bs58.encode(Buffer.from(discriminator)) } },
-    { memcmp: { offset: PHASE_OFFSET, bytes: bs58.encode(Buffer.from([1])) } },
-  ] });
-  const now = Date.now() / 1000, tables: TableView[] = [];
-  for (const { pubkey, account } of accounts) {
-    try { tables.push(decodeTable(pubkey, account.data)); } catch { /* Not a canonical table. */ }
-  }
-  return tables.filter(table => table.phase === 'lobby' && table.lobbyDeadline > now && table.playerCount < table.maxPlayers).sort((a, b) => a.index - b.index);
+/** Tables waiting for players (phase Lobby), read straight from the rollup, soonest deadline first. */
+export const listLobbies = (): Promise<TableView[]> => client.listLobbies(Date.now() / 1000);
+
+/** The table, or undefined once it is gone: closed after its grace, or an account that is not an
+ * ephemeral table at all (a link to the retired table pool). */
+export async function readTable(table: string): Promise<TableView | undefined> {
+  const address = new PublicKey(table), account = await client.er.getAccountInfo(address, 'confirmed');
+  if (!account?.owner.equals(PROGRAM_ID)) return undefined;
+  try { return decodeTable(address, account.data); } catch { return undefined; }
 }
 
 /** Whether `owner`'s play balance can receive a payout right now (mirrors the program's check). */
@@ -187,6 +191,7 @@ const FRIENDLY: Record<string, string> = {
   AlreadyJoined: 'You are already at this table.',
   StaleNonce: 'This invite is for an earlier game at this table.',
   NotEnoughPlayers: 'At least two players need to join first.',
+  HouseOutOfRent: 'Bankroll can’t open new tables right now. Try again in a few minutes.',
   Unauthorized: 'It isn’t your move.',
 };
 export function friendlyError(error: unknown): string {

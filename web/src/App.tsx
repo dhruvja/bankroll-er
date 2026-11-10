@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { PublicKey, type Keypair } from '@solana/web3.js';
+import type { Keypair } from '@solana/web3.js';
 import { board, defaultTarget } from '../../shared/board';
 import { DEMO_ENTRY, PAID_ENTRIES, PROTOCOL_FEE_BPS, RELAY_FEE, SHARES_BPS, WITHDRAW_MINIMUM } from '../../shared/config';
 import type { TableView } from '../../shared/chain';
-import { client, deposit, getWalletInfo, joinTable, listLobbies, openTable, wallet, withdraw, type WalletInfo } from './lib/game';
+import { deposit, getWalletInfo, hostedTable, joinTable, listLobbies, openTable, readTable, wallet, withdraw, type WalletInfo } from './lib/game';
 import { exportWallet } from './lib/wallet';
 import { GROUP_COLORS, SEAT_COLORS, money } from './Board';
 import { THEMES, spacesFor } from '../../shared/themes';
-import { TableScreen, lastGamePath, navigate, saveName, savedName, useBusy, usdc } from './Table';
+import { TableScreen, lastGamePath, navigate, saveName, savedName, tableLabel, useBusy, usdc } from './Table';
 import { Rules } from './Rules';
 
 function usePath() {
@@ -145,19 +145,38 @@ function ThemePicker({ theme, onChange }: { theme: number; onChange: (theme: num
   );
 }
 
+const gamePath = (view: TableView) => `${view.entry === DEMO_ENTRY ? '/demo' : ''}/play/${view.address}/${view.gameNonce}`;
+
+/** Your last game if it is still on, else a table you host that is still in a game. */
 function Resume() {
   const [game, setGame] = useState<{ path: string; view: TableView }>();
   useEffect(() => {
-    const path = lastGamePath(), match = path && /^(?:\/demo)?\/play\/(\w+)\/(\d+)$/.exec(path);
-    if (!match) return;
-    void client.readTable(new PublicKey(match[1])).then(view => { if (view.gameNonce === Number(match[2]) && view.phase !== 'free') setGame({ path: path!, view }); }, () => {});
+    let alive = true;
+    void (async () => {
+      const path = lastGamePath(), match = path ? /^(?:\/demo)?\/play\/(\w+)\/(\d+)$/.exec(path) : null;
+      const last = match ? await readTable(match[1]).catch(() => undefined) : undefined;
+      if (path && match && last?.gameNonce === Number(match[2]) && last.phase !== 'free') { if (alive) setGame({ path, view: last }); return; }
+      const hosted = await hostedTable().catch(() => undefined);
+      if (alive && hosted && hosted.phase !== 'free') setGame({ path: gamePath(hosted), view: hosted });
+    })();
+    return () => { alive = false; };
   }, []);
   if (!game) return null;
   return (
     <section className="panel resume" data-testid="resume">
-      <p>You have a game in progress at table {game.view.index + 1} ({game.view.phase}).</p>
+      <p>You have a game in progress at {tableLabel(game.view)} ({game.view.phase}).</p>
       <button className="btn primary" onClick={() => navigate(game.path)}>Back to your game</button>
     </section>
+  );
+}
+
+/** Opening a table while your own is still in a game: a wallet hosts one table at a time. */
+function Hosting({ view }: { view: TableView }) {
+  return (
+    <div className="hosting" data-testid="hosting">
+      <p className="quiet">You already host {tableLabel(view)}, and its game is still {view.phase === 'lobby' ? 'waiting for players' : 'going'}. You can host one table at a time.</p>
+      <button type="button" className="btn primary" data-testid="hosting-back" onClick={() => navigate(gamePath(view))}>Back to your table</button>
+    </div>
   );
 }
 
@@ -165,12 +184,12 @@ function Resume() {
  * that size and entry that still has time left (a seat can go between reading and joining, so it
  * tries the next), and opens a new table on the Classic board when none is waiting. */
 function QuickPlay({ demo, info, refresh, openWallet }: { demo: boolean; info?: WalletInfo; refresh: () => void; openWallet: () => void }) {
-  const { busy, error, run } = useBusy(), [name, setName] = useState(savedName);
+  const { busy, error, run } = useBusy(), [name, setName] = useState(savedName), [hosting, setHosting] = useState<TableView>();
   const entry = demo ? DEMO_ENTRY : PAID_ENTRIES[0], prefix = demo ? '/demo' : '';
   const play = (players: number) => void run(async () => {
     const trimmed = name.trim();
     if (!trimmed) throw new Error('Pick a name first.');
-    saveName(trimmed);
+    saveName(trimmed); setHosting(undefined);
     const me = (await wallet()).publicKey.toBase58(), soon = Date.now() / 1000 + 30;
     const waiting = (await listLobbies())
       .filter(table => table.entry === entry && table.maxPlayers === players && table.playerCount < players && table.lobbyDeadline > soon && !table.seats.some(seat => seat.wallet === me))
@@ -184,6 +203,7 @@ function QuickPlay({ demo, info, refresh, openWallet }: { demo: boolean; info?: 
       } catch { /* Filled or closed since we read it: try the next one. */ }
     }
     const opened = await openTable({ name: trimmed, entry, maxPlayers: players, target: defaultTarget(players), theme: 0, startCash: board.rules.startCash });
+    if (opened.hosting) return setHosting(opened.hosting);
     if (!demo) refresh();
     navigate(`${prefix}/play/${opened.table}/${opened.nonce}`);
   });
@@ -197,6 +217,7 @@ function QuickPlay({ demo, info, refresh, openWallet }: { demo: boolean; info?: 
         <button key={players} className="btn primary" data-testid={`quick-${players}`} disabled={busy} onClick={() => play(players)}>
           <b>{players} players</b><small>First to {money(defaultTarget(players))}</small></button>))}</div>
       {busy && <p className="quiet">Finding you a table…</p>}
+      {hosting && <Hosting view={hosting} />}
       {short && <p className="quiet">Your play balance is short, so this first moves USDC in from your wallet (0.20 USDC fee, no SOL). <button type="button" className="linkish" onClick={openWallet}>Open wallet</button></p>}
       {error && <p className="error" data-testid="quick-error">{error}</p>}
     </section>
@@ -204,14 +225,15 @@ function QuickPlay({ demo, info, refresh, openWallet }: { demo: boolean; info?: 
 }
 
 function OpenTableForm({ demo, info, refresh, openWallet }: { demo: boolean; info?: WalletInfo; refresh: () => void; openWallet: () => void }) {
-  const { busy, error, run } = useBusy();
+  const { busy, error, run } = useBusy(), [hosting, setHosting] = useState<TableView>();
   const [name, setName] = useState(savedName), [players, setPlayers] = useState(2), [theme, setTheme] = useState(0), [startCash, setStartCash] = useState(board.rules.startCash), [paidEntry, setPaidEntry] = useState<number>(PAID_ENTRIES[0]);
   const entry = demo ? DEMO_ENTRY : paidEntry;
   const submit = (event: FormEvent) => {
     event.preventDefault();
     void run(async () => {
-      saveName(name.trim());
+      saveName(name.trim()); setHosting(undefined);
       const opened = await openTable({ name: name.trim(), entry, maxPlayers: players, target: defaultTarget(players, startCash), theme, startCash });
+      if (opened.hosting) return setHosting(opened.hosting);
       if (!demo) refresh();
       navigate(`${demo ? '/demo' : ''}/play/${opened.table}/${opened.nonce}`);
     });
@@ -233,6 +255,7 @@ function OpenTableForm({ demo, info, refresh, openWallet }: { demo: boolean; inf
       <p className="quiet">Everyone starts with {money(startCash)}; first to {money(defaultTarget(players, startCash))} net worth wins. {demo ? 'You get an invite link to share once the table is open.' : 'Opening pays your entry. A lobby that never starts refunds everyone in full.'}</p>
       <button className="btn primary" data-testid="open-submit" disabled={busy}>{busy ? 'Opening…' : demo ? 'Open table' : `Open table for ${usdc(entry)} USDC`}</button>
       {short && <p className="quiet">Your play balance is short, so this first moves USDC in from your wallet (0.20 USDC fee, no SOL). <button type="button" className="linkish" onClick={openWallet}>Open wallet</button></p>}
+      {hosting && <Hosting view={hosting} />}
       {error && <p className="error" data-testid="error">{error}</p>}
     </form>
   );
@@ -257,7 +280,7 @@ function OpenTables({ demo }: { demo: boolean }) {
         const href = `${demo ? '/demo' : ''}/play/${table.address}/${table.gameNonce}`;
         return (
           <li key={table.address}>
-            <a href={href} data-testid={`open-table-${table.index}`} onClick={event => { event.preventDefault(); navigate(href); }}>
+            <a href={href} data-testid={`open-table-${table.address}`} onClick={event => { event.preventDefault(); navigate(href); }}>
               <span className="seats">{table.seats.map((seat, index) => <i key={seat.wallet} style={{ background: SEAT_COLORS[index] }} />)}{Array.from({ length: table.maxPlayers - table.playerCount }, (_, i) => <i key={`e${i}`} className="empty" />)}</span>
               <span><b>{table.seats[0]?.name}’s table</b><small>{demo ? '' : `${usdc(table.entry)} USDC, `}{THEMES[table.theme]?.name ?? 'Classic'} board, first to {money(table.target)}</small></span>
               <span className="join-word">Join</span>

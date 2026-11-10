@@ -5,12 +5,11 @@ import { board, isProperty } from '../../shared/board';
 import { PROTOCOL_FEE_BPS, TOKEN_SCALE, WITHDRAW_MINIMUM } from '../../shared/config';
 import { THEMES, spacesFor } from '../../shared/themes';
 import { NO_OFFER, NO_OWNER, canBuild, currentSeat, expectedPayouts, isActive, netWorth, rent, saleValue, tradeOffers, tradeable, type TableView } from '../../shared/chain';
-import { acceptTrade, act, canReceive, client, friendlyError, joinTable, property, runCrank, subscribeTable, tableTransactions, trade, watchTableTransactions, type TableTransaction } from './lib/game';
+import { acceptTrade, act, canReceive, friendlyError, joinTable, property, readTable, runCrank, subscribeTable, tableTransactions, trade, watchTableTransactions, type TableTransaction } from './lib/game';
 import { sounds, useSoundToggle } from './sound';
 import { RulesSheet } from './Rules';
 import { moveMoney, seatElement, spaceElement } from './effects';
 import { Board, Die, GROUP_COLORS, GROUP_INK, SEAT_COLORS, SEAT_INK, faces, money, useDie, useTokenPositions, type Highlight } from './Board';
-import { PublicKey } from '@solana/web3.js';
 
 const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
 /** The name you last played under, so every name field starts filled in. */
@@ -19,6 +18,8 @@ export const savedName = () => { try { return localStorage.getItem(NAME_KEY) ?? 
 export const saveName = (name: string) => { try { localStorage.setItem(NAME_KEY, name); } catch { /* Convenience only. */ } };
 
 export const usdc = (atoms: number) => (atoms / TOKEN_SCALE).toFixed(2);
+/** Tables have no number: each belongs to its host, so it goes by the host's name. */
+export const tableLabel = (view: TableView) => `${view.seats.find(seat => seat.wallet === view.host)?.name || `${view.host.slice(0, 4)}…${view.host.slice(-4)}`}’s table`;
 const LAST_GAME = 'bankroll.lastGame';
 export function navigate(path: string) { history.pushState(null, '', path); dispatchEvent(new PopStateEvent('popstate')); }
 
@@ -37,21 +38,40 @@ export function useBusy() {
 }
 
 /** Table state from the rollup: a websocket push, with a read every 4 s whenever the socket has been
- * quiet, so a dropped connection or a reload always lands on the exact current stage. */
+ * quiet, so a dropped connection or a reload always lands on the exact current stage. `gone` means the
+ * account no longer exists (closed after its grace) or is not a current table. */
 function useTable(table: string) {
-  const [view, setView] = useState<TableView>(), [connected, setConnected] = useState(true), [readError, setReadError] = useState<string>();
+  const [view, setView] = useState<TableView>(), [gone, setGone] = useState(false), [connected, setConnected] = useState(true), [readError, setReadError] = useState<string>();
   useEffect(() => {
     let lastPush = 0, alive = true;
-    const accept = (next: TableView) => { if (alive) { setView(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next); setReadError(undefined); } };
-    const stop = subscribeTable(table, next => { lastPush = Date.now(); setConnected(true); accept(next); }, failure => setReadError(failure.message));
-    const timer = setInterval(() => {
-      if (Date.now() - lastPush < 4_000) return;
+    const accept = (next: TableView) => { if (alive) { setView(previous => JSON.stringify(previous) === JSON.stringify(next) ? previous : next); setGone(false); setReadError(undefined); } };
+    const check = () => {
       const started = Date.now();
-      client.readTable(new PublicKey(table)).then(next => { setConnected(true); if (lastPush < started) accept(next); }, () => setConnected(false));
-    }, 4_000);
+      readTable(table).then(next => {
+        if (!alive) return;
+        setConnected(true);
+        if (!next) { setGone(true); setReadError(undefined); } else if (lastPush < started) accept(next);
+      }, () => { if (alive) setConnected(false); });
+    };
+    const stop = subscribeTable(table, next => { lastPush = Date.now(); setConnected(true); accept(next); }, failure => { if (alive) { setReadError(failure.message); check(); } });
+    const timer = setInterval(() => { if (Date.now() - lastPush >= 4_000) check(); }, 4_000);
     return () => { alive = false; stop(); clearInterval(timer); };
   }, [table]);
-  return { view, connected, readError };
+  return { view, gone, connected, readError };
+}
+
+/** The last snapshot of a game that ended (Free with this nonce), kept in the page and this browser:
+ * the table is re-opened in place for the host's next game or closed after its grace, and every seat
+ * still needs the results and payouts. */
+function useEndedGame(view: TableView | undefined, table: string, nonce: number) {
+  const key = `bankroll.result.${table}.${nonce}`;
+  const [ended, setEnded] = useState<TableView | undefined>(() => { try { const saved = localStorage.getItem(key); return saved ? JSON.parse(saved) as TableView : undefined; } catch { return undefined; } });
+  useEffect(() => {
+    if (view?.gameNonce !== nonce || view.phase !== 'free') return;
+    setEnded(view);
+    try { localStorage.setItem(key, JSON.stringify(view)); } catch { /* The page copy is enough. */ }
+  }, [view, nonce, key]);
+  return ended;
 }
 
 export interface FeedEntry {
@@ -239,15 +259,19 @@ const STAGE_SECONDS: Record<string, number> = {
 export function TableScreen({ demo, table, nonce, me, signer, refresh, openWallet }: {
   demo: boolean; table: string; nonce: number; me: string; signer: Keypair; refresh: () => void; openWallet: () => void;
 }) {
-  const { view, connected, readError } = useTable(table);
+  const { view: latest, gone, connected, readError } = useTable(table);
+  // `live`: the table is on the rollup and still on this invite's game. Otherwise a game that ended
+  // shows from its kept snapshot, read only.
+  const ended = useEndedGame(gone ? undefined : latest, table, nonce);
+  const live = !!latest && !gone && latest.gameNonce === nonce, view = live ? latest : ended;
   const { busy, error, run } = useBusy(), now = useNow();
   const [selected, setSelected] = useState<number>(), [requested, setRequested] = useState(false), [name, setName] = useState(savedName);
   const [inviteOpen, setInviteOpen] = useState(false), [rulesOpen, setRulesOpen] = useState(false), [quitting, setQuitting] = useState(false);
-  const seat = view ? view.seats.findIndex(item => item.wallet === me) : -1, current = view && nonce === view.gameNonce;
-  const feed = useFeed(current ? view : undefined, `bankroll.feed.${table}.${nonce}`);
-  const card = useDrawnCard(current ? view : undefined);
-  const die = useDie(current ? view : undefined, requested);
-  const positions = useTokenPositions(current ? view : undefined, die.settleAt);
+  const seat = view ? view.seats.findIndex(item => item.wallet === me) : -1;
+  const feed = useFeed(view, `bankroll.feed.${table}.${nonce}`);
+  const card = useDrawnCard(view);
+  const die = useDie(view, requested);
+  const positions = useTokenPositions(view, die.settleAt);
   // Every token has finished its walk: the buy prompt and rent toasts wait for this.
   const landed = !die.tumbling && !!view && positions.every((at, index) => at === view.seats[index]?.position);
   const announcement = useAnnouncement(feed, landed);
@@ -256,18 +280,20 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
   const buying = view?.phase === 'playing' && view.stage === 'buydecision' && landed ? view.seats[currentSeat(view)].position : undefined;
   const leavingCard = useLeaving(buying);
   const prefix = demo ? '/demo' : '', home = demo ? '/demo' : '/', invite = `${location.origin}${prefix}/play/${table}/${nonce}`;
-  useEffect(() => (current && seat >= 0 ? runCrank(table, signer) : undefined), [table, signer, current, seat]);
-  const yourTurn = !!current && view.phase === 'playing' && view.stage === 'preroll' && seat >= 0 && seat === currentSeat(view);
+  // The crank also closes the table once its grace has passed; it stops when the table is gone or moves on.
+  useEffect(() => (live && seat >= 0 ? runCrank(table, signer) : undefined), [table, signer, live, seat]);
+  const yourTurn = !!view && view.phase === 'playing' && view.stage === 'preroll' && seat >= 0 && seat === currentSeat(view);
   useEffect(() => { if (yourTurn) { sounds.turn(); navigator.vibrate?.(60); } }, [yourTurn]);
   useEffect(() => { if (!demo && (view?.phase === 'free' || view?.phase === 'finished')) refresh(); }, [demo, view?.phase, refresh]);
+  const phase = view?.phase;
   useEffect(() => {
-    if (!current || seat < 0) return;
-    try { if (view.phase === 'free') localStorage.removeItem(LAST_GAME); else localStorage.setItem(LAST_GAME, `${prefix}/play/${table}/${nonce}`); } catch { /* Convenience only. */ }
-  }, [current, seat, view?.phase, table, nonce, prefix]);
+    if (!phase || seat < 0) return;
+    try { if (phase === 'free') localStorage.removeItem(LAST_GAME); else localStorage.setItem(LAST_GAME, `${prefix}/play/${table}/${nonce}`); } catch { /* Convenience only. */ }
+  }, [seat, phase, table, nonce, prefix]);
 
   // Trade alert: someone else's Auction landing wants your offer.
   const lander = view ? currentSeat(view) : -1;
-  const tradeAlert = Boolean(view && current && seat >= 0 && seat !== lander && isActive(view, seat) && view.phase === 'playing'
+  const tradeAlert = Boolean(view && live && seat >= 0 && seat !== lander && isActive(view, seat) && view.phase === 'playing'
     && (view.stage === 'tradeopen' || view.stage === 'tradeoffers' && now < view.trade.deadline));
   useEffect(() => {
     if (!tradeAlert) return;
@@ -285,10 +311,10 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
     return marks;
   }, [view]);
 
-  if (!view) return <section className="sheet center-note" data-testid="table-loading">{readError ?? 'Finding the table on the rollup…'}</section>;
-  if (!current) return (
+  if (!view && !gone && !latest) return <section className="sheet center-note" data-testid="table-loading">{readError ?? 'Finding the table on the rollup…'}</section>;
+  if (!view) return (
     <section className="sheet center-note" data-testid="stale-invite">
-      <p>This invite was for an earlier game at table {view.index + 1}. That game has ended.</p>
+      <p>This invite was for an earlier game{latest && !gone ? ` at ${tableLabel(latest)}` : ''}. That game has ended.</p>
       <button className="btn" onClick={() => navigate(home)}>Back to the tables</button>
     </section>
   );
@@ -310,11 +336,11 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
       <div className="table-head">
         <a className="head-home" href={home} onClick={event => { event.preventDefault(); navigate(home); }} aria-label="Back to the tables">←</a>
         <div className="head-title">
-          <h1>Table {view.index + 1}</h1>
+          <h1 data-testid="table-label">{tableLabel(view)}</h1>
           <p>{demo ? '' : `${usdc(view.entry)} USDC entry, ${usdc(view.entry * view.playerCount)} pot, `}{THEMES[view.theme]?.name ?? 'Classic'} board, {money(view.startCash)} start, first to {money(view.target)} net worth</p>
         </div>
         <SoundToggle />
-        <span className={`link-state${connected ? '' : ' offline'}`} data-testid="connection">{connected ? 'Live' : 'Reconnecting…'}</span>
+        <span className={`link-state${connected || !live ? '' : ' offline'}`} data-testid="connection">{!live ? 'Ended' : connected ? 'Live' : 'Reconnecting…'}</span>
         <button type="button" className="head-act" data-testid="rules-open" onClick={() => setRulesOpen(true)} aria-label="How to play"><span className="label">Rules</span></button>
         {canQuit && <button type="button" className="head-act quit" data-testid="forfeit-open" onClick={() => setQuitting(true)} aria-label="Forfeit"><span className="label">Forfeit</span></button>}
         {!demo && <button type="button" className="head-btn" onClick={openWallet}>Wallet</button>}
@@ -385,7 +411,7 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
             <button className="btn primary" onClick={() => navigate(home)}>Back to the tables</button></section>}
           {view.phase === 'refunding' && (demo ? <Closing view={view} /> : <div className="pop"><Refunding view={view} seat={seat} now={now} openWallet={openWallet} /></div>)}
           <Feed feed={feed} />
-          <TxLog table={table} since={view.lobbyDeadline - LOBBY_SECONDS} />
+          <TxLog table={table} since={view.lobbyDeadline - LOBBY_SECONDS} until={live ? undefined : view.freedAt} />
         </div>
       </div>
     </div>
@@ -772,7 +798,7 @@ function Feed({ feed }: { feed: FeedEntry[] }) {
 const LOBBY_SECONDS = 600;
 
 /** The table account is reused across games, so the log keeps only transactions since this game's lobby opened. */
-function TxLog({ table, since }: { table: string; since: number }) {
+function TxLog({ table, since, until }: { table: string; since: number; until?: number }) {
   const [open, setOpen] = useState(false), [rows, setRows] = useState<TableTransaction[]>([]), [error, setError] = useState<string>();
   useEffect(() => {
     if (!open) return;
@@ -780,14 +806,14 @@ function TxLog({ table, since }: { table: string; since: number }) {
     const merge = (incoming: TableTransaction[]) => setRows(current => {
       const byId = new Map(current.map(row => [row.signature, row]));
       for (const row of incoming) byId.set(row.signature, { ...row, time: byId.get(row.signature)?.time ?? row.time, label: row.label ?? byId.get(row.signature)?.label });
-      return [...byId.values()].filter(row => row.time === null || row.time >= since).sort((a, b) => (b.time ?? 0) - (a.time ?? 0)).slice(0, 60);
+      return [...byId.values()].filter(row => row.time === null || (row.time >= since && (until === undefined || row.time <= until + 5))).sort((a, b) => (b.time ?? 0) - (a.time ?? 0)).slice(0, 60);
     });
     const load = () => tableTransactions(table).then(list => { if (alive) { merge(list); setError(undefined); } }, failure => { if (alive) setError(friendlyError(failure)); });
     void load();
     const stop = watchTableTransactions(table, row => { if (alive) merge([row]); });
     const timer = setInterval(load, 10_000);
     return () => { alive = false; stop(); clearInterval(timer); };
-  }, [open, table, since]);
+  }, [open, table, since, until]);
   return (
     <section className="panel txlog" data-testid="tx-log">
       <button className="txlog-toggle" data-testid="tx-log-toggle" aria-expanded={open} onClick={() => setOpen(value => !value)}>
