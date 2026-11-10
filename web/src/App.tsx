@@ -3,7 +3,7 @@ import type { Keypair } from '@solana/web3.js';
 import { board, defaultTarget } from '../../shared/board';
 import { DEMO_ENTRY, PAID_ENTRIES, PROTOCOL_FEE_BPS, RELAY_FEE, SHARES_BPS, WITHDRAW_MINIMUM } from '../../shared/config';
 import type { TableView } from '../../shared/chain';
-import { deposit, getWalletInfo, hostedTable, joinTable, listLobbies, openTable, readTable, wallet, withdraw, type WalletInfo } from './lib/game';
+import { act, addBot, deposit, getWalletInfo, hostedTable, joinTable, listLobbies, openTable, readTable, wallet, withdraw, type WalletInfo } from './lib/game';
 import { exportWallet } from './lib/wallet';
 import { GROUP_COLORS, SEAT_COLORS, money } from './Board';
 import { THEMES, spacesFor } from '../../shared/themes';
@@ -207,6 +207,19 @@ function QuickPlay({ demo, info, refresh, openWallet }: { demo: boolean; info?: 
     if (!demo) refresh();
     navigate(`${prefix}/play/${opened.table}/${opened.nonce}`);
   });
+  // Demo only: a two-player table against this browser's bot, started straight away.
+  const playBot = () => void run(async () => {
+    const trimmed = name.trim();
+    if (!trimmed) throw new Error('Pick a name first.');
+    saveName(trimmed); setHosting(undefined);
+    const opened = await openTable({ name: trimmed, entry, maxPlayers: 2, target: defaultTarget(2), theme: 0, startCash: board.rules.startCash });
+    if (opened.hosting) return setHosting(opened.hosting);
+    // Lands in the lobby either way: if the bot can't be seated, it has an Add a bot button to retry.
+    try {
+      const view = await readTable(opened.table);
+      if (view) { await addBot(view); await act(opened.table, 'start'); }
+    } finally { navigate(`${prefix}/play/${opened.table}/${opened.nonce}`); }
+  });
   const short = !demo && info?.play !== null && info?.play !== undefined && info.play * 1e6 < entry;
   return (
     <section className="panel quick-play" data-testid="quick-play">
@@ -215,7 +228,8 @@ function QuickPlay({ demo, info, refresh, openWallet }: { demo: boolean; info?: 
       <label>Your name<input data-testid="quick-name" maxLength={16} value={name} onChange={event => setName(event.target.value)} autoComplete="nickname" /></label>
       <div className="quick-modes">{[2, 3, 4].map(players => (
         <button key={players} className="btn primary" data-testid={`quick-${players}`} disabled={busy} onClick={() => play(players)}>
-          <b>{players} players</b><small>First to {money(defaultTarget(players))}</small></button>))}</div>
+          <b>{players} players</b><small>First to {money(defaultTarget(players))}</small></button>))}
+        {demo && <button className="btn" data-testid="quick-bot" disabled={busy} onClick={playBot}><b>Play a bot</b><small>Just you, right now</small></button>}</div>
       {busy && <p className="quiet">Finding you a table…</p>}
       {hosting && <Hosting view={hosting} />}
       {short && <p className="quiet">Your play balance is short, so this first moves USDC in from your wallet (0.20 USDC fee, no SOL). <button type="button" className="linkish" onClick={openWallet}>Open wallet</button></p>}

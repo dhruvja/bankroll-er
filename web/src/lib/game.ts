@@ -5,6 +5,7 @@ import { DEMO_ENTRY, DEVNET_USDC, ER_RPC, RELAY_FEE, TOKEN_SCALE, WITHDRAW_MINIM
 import { BankrollClient, startCrank, type SentTransaction } from '../../../shared/client';
 import { SponsoredPayments } from '../../../shared/sponsored';
 import { depositForEntry } from '../../../shared/funding';
+import { botMove } from '../../../shared/bot';
 import { CLOSE_GRACE_SECONDS, PROGRAM_ID, decodeTable, tokenAddress, type TableView } from '../../../shared/chain';
 import { openWallet } from './wallet';
 
@@ -198,4 +199,58 @@ export function friendlyError(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
   const name = /^([A-Za-z]+) \(\d+\)$/.exec(text)?.[1];
   return name && FRIENDLY[name] ? FRIENDLY[name] : text;
+}
+
+/** Demo bots. Their wallets live in this browser in plain storage: they only ever hold faucet play
+ * money, and a bot plays only while one of its tables is open in this browser. */
+const BOTS = 'bankroll.bots.v1';
+export const BOT_NAMES = ['Penny (bot)', 'Rook (bot)', 'Dice (bot)'];
+let botKeys: Keypair[] | undefined;
+function bots(): Keypair[] {
+  if (botKeys) return botKeys;
+  let stored: string[] = [];
+  try { const value: unknown = JSON.parse(localStorage.getItem(BOTS) ?? '[]'); if (Array.isArray(value)) stored = value.filter((item): item is string => typeof item === 'string'); } catch { /* Regenerated below. */ }
+  const keys = stored.slice(0, BOT_NAMES.length).map(secret => Keypair.fromSecretKey(bs58.decode(secret)));
+  while (keys.length < BOT_NAMES.length) keys.push(Keypair.generate());
+  localStorage.setItem(BOTS, JSON.stringify(keys.map(key => bs58.encode(key.secretKey))));
+  return botKeys = keys;
+}
+export const botFor = (wallet: string) => bots().find(key => key.publicKey.toBase58() === wallet);
+
+/** Seats this browser's next free bot at a demo table; the faucet funds it the first time. */
+export async function addBot(view: TableView) {
+  invariant(view.entry === DEMO_ENTRY, 'Bots only play free demo tables.');
+  const keys = bots(), index = keys.findIndex(key => !view.seats.some(seat => seat.wallet === key.publicKey.toBase58()));
+  invariant(index >= 0, 'All three bots are already at this table.');
+  await fundEntry(keys[index], view.entry);
+  record(await client.joinTable(new PublicKey(view.address), keys[index], view.gameNonce, BOT_NAMES[index]));
+}
+
+/** Plays `bot`'s seat from this tab: after a short pause on each new snapshot (so the dice and tokens
+ * land first), it sends the move `botMove` picks. A failed move waits for the next snapshot or 3 s. */
+export function runBot(table: string, bot: Keypair, thinkMs = 1_800) {
+  const address = new PublicKey(table), wallet = bot.publicKey.toBase58();
+  let view: TableView | undefined, handled: TableView | undefined, seenAt = 0, retryAt = 0, busy = false, stopped = false;
+  const unsubscribe = client.subscribeTable(address, next => { view = next; seenAt = Date.now(); });
+  const timer = setInterval(() => {
+    if (busy || stopped || !view || view === handled || Date.now() < Math.max(seenAt + thinkMs, retryAt)) return;
+    const snapshot = view, seat = snapshot.seats.findIndex(item => item.wallet === wallet);
+    const move = seat >= 0 ? botMove(snapshot, seat, Date.now() / 1000) : undefined;
+    if (!move) return;
+    busy = true;
+    const send = (() => {
+      switch (move.kind) {
+        case 'roll': return client.roll(address, bot);
+        case 'buy': return client.buy(address, bot);
+        case 'pass': return client.pass(address, bot);
+        case 'bail': return client.payBail(address, bot);
+        case 'build': return client.build(address, bot, move.space);
+        case 'sell': return client.sell(address, bot, move.space);
+        case 'trade-offer': return client.offerTrade(address, bot, move.space);
+        case 'trade-accept': return client.acceptTrade(address, bot, move.seat, move.space);
+      }
+    })();
+    void send.then(sent => { handled = snapshot; record(sent); }, () => { retryAt = Date.now() + 3_000; }).finally(() => { busy = false; });
+  }, 250);
+  return () => { stopped = true; clearInterval(timer); unsubscribe(); };
 }

@@ -5,7 +5,7 @@ import { board, isProperty } from '../../shared/board';
 import { PROTOCOL_FEE_BPS, TOKEN_SCALE, WITHDRAW_MINIMUM } from '../../shared/config';
 import { THEMES, spacesFor } from '../../shared/themes';
 import { NO_OFFER, NO_OWNER, canBuild, currentSeat, expectedPayouts, isActive, netWorth, rent, saleValue, tradeOffers, tradeable, type TableView } from '../../shared/chain';
-import { acceptTrade, act, canReceive, friendlyError, joinTable, property, readTable, runCrank, subscribeTable, tableTransactions, trade, watchTableTransactions, type TableTransaction } from './lib/game';
+import { acceptTrade, act, addBot, botFor, canReceive, runBot, friendlyError, joinTable, property, readTable, runCrank, subscribeTable, tableTransactions, trade, watchTableTransactions, type TableTransaction } from './lib/game';
 import { sounds, useSoundToggle } from './sound';
 import { RulesSheet } from './Rules';
 import { moveMoney, seatElement, spaceElement } from './effects';
@@ -282,6 +282,13 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
   const prefix = demo ? '/demo' : '', home = demo ? '/demo' : '/', invite = `${location.origin}${prefix}/play/${table}/${nonce}`;
   // The crank also closes the table once its grace has passed; it stops when the table is gone or moves on.
   useEffect(() => (live && seat >= 0 ? runCrank(table, signer) : undefined), [table, signer, live, seat]);
+  // This browser's bots play their seats from here while the game is live.
+  const botWallets = live && view ? view.seats.map(item => item.wallet).filter(wallet => botFor(wallet)).join(',') : '';
+  useEffect(() => {
+    if (!botWallets) return;
+    const stops = botWallets.split(',').map(wallet => runBot(table, botFor(wallet)!));
+    return () => stops.forEach(stop => stop());
+  }, [table, botWallets]);
   const yourTurn = !!view && view.phase === 'playing' && view.stage === 'preroll' && seat >= 0 && seat === currentSeat(view);
   useEffect(() => { if (yourTurn) { sounds.turn(); navigator.vibrate?.(60); } }, [yourTurn]);
   useEffect(() => { if (!demo && (view?.phase === 'free' || view?.phase === 'finished')) refresh(); }, [demo, view?.phase, refresh]);
@@ -360,7 +367,8 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
           <SeatStrip view={view} me={me} />
           <Board view={view} positions={positions} highlights={highlights} selected={selected} onSelect={space => setSelected(space === selected ? undefined : space)}>
             <Center view={view} seat={seat} myTurn={myTurn} left={left} now={now} busy={busy} die={die} landed={landed} card={card} timedOut={timedOut} demo={demo} home={home}
-              onRoll={action('roll')} onBail={action('bail')} onStart={action('start')} onCancel={action('cancel')} onBuy={action('buy')} onPass={action('pass')} />
+              onRoll={action('roll')} onBail={action('bail')} onStart={action('start')} onCancel={action('cancel')} onBuy={action('buy')} onPass={action('pass')}
+              onAddBot={() => void run(() => addBot(view))} />
             {announcement && <Announcement key={announcement.at} view={view} entry={announcement} />}
           </Board>
         </div>
@@ -423,10 +431,10 @@ function SoundToggle() {
   return <button type="button" className={`sound-toggle${muted ? ' off' : ''}`} data-testid="sound-toggle" aria-pressed={!muted} aria-label={muted ? 'Sound off' : 'Sound on'} onClick={toggle}><span className="label">{muted ? 'Sound off' : 'Sound on'}</span></button>;
 }
 
-function Center({ view, seat, myTurn, left, now, busy, die, landed, card, timedOut, demo, home, onRoll, onBail, onStart, onCancel, onBuy, onPass }: {
+function Center({ view, seat, myTurn, left, now, busy, die, landed, card, timedOut, demo, home, onRoll, onBail, onStart, onCancel, onBuy, onPass, onAddBot }: {
   view: TableView; seat: number; myTurn: boolean; left: number; now: number; busy: boolean; die: { face: number; tumbling: boolean };
   landed: boolean; card?: { seat: number; card: number }; timedOut: boolean; demo: boolean; home: string; onRoll: () => void; onBail: () => void; onStart: () => void; onCancel: () => void;
-  onBuy: () => void; onPass: () => void;
+  onBuy: () => void; onPass: () => void; onAddBot: () => void;
 }) {
   const turnSeat = currentSeat(view), who = view.seats[turnSeat];
   if (view.phase === 'lobby') return (
@@ -435,6 +443,7 @@ function Center({ view, seat, myTurn, left, now, busy, die, landed, card, timedO
       <p className="quiet">Lobby closes in {clock(left)}</p>
       {view.host === view.seats[seat]?.wallet && <div className="actions">
         <button className="btn primary" data-testid="start-game" disabled={busy || view.playerCount < 2} onClick={onStart}>Start game</button>
+        {demo && view.playerCount < view.maxPlayers && <button className="btn" data-testid="add-bot" disabled={busy} onClick={onAddBot}>Add a bot</button>}
         <button className="btn ghost" data-testid="cancel-table" disabled={busy} onClick={onCancel}>{demo ? 'Cancel table' : 'Cancel and refund'}</button>
       </div>}
       {seat >= 0 && view.host !== view.seats[seat].wallet && <p className="quiet">You’re in. Waiting for the host to start.</p>}
