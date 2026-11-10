@@ -21,6 +21,18 @@ export const GROUP_INK: Record<string, string> = {
 const GROUP_SHAPES: Record<string, string> = {
   Brown: 'square', 'Sky Blue': 'circle', Purple: 'half', Orange: 'triangle', Red: 'diamond', Yellow: 'quarter', Green: 'ring', 'Dark Blue': 'circle', Public: 'stripes',
 };
+/** Each player's face, picked from their wallet so it stays the same from game to game, and nudged
+ * along the list so no two players at a table share one. No server: the wallet is the profile. */
+const FACES = ['🦊', '🐼', '🐯', '🐸', '🐵', '🦁', '🐨', '🐙', '🦉', '🐧', '🐻', '🐰', '🦄', '🐲', '🐳', '🦖', '🐝', '🦜', '🐢', '🐷', '🐮', '🐺', '🦦', '🐹'];
+export function faces(seats: { wallet: string }[]): string[] {
+  const taken = new Set<number>();
+  return seats.map(seat => {
+    let pick = [...seat.wallet].reduce((hash, char) => (hash * 31 + char.charCodeAt(0)) >>> 0, 7) % FACES.length;
+    while (taken.has(pick)) pick = (pick + 1) % FACES.length;
+    taken.add(pick);
+    return FACES[pick];
+  });
+}
 export const money = (value: number) => `${value < 0 ? '−' : ''}$${Math.abs(value).toLocaleString('en-US')}`;
 
 /** Grid cell (row, column) of each space on the 8×8 ring: Start bottom right, then clockwise
@@ -53,7 +65,7 @@ export function Board({ view, positions, highlights, selected, onSelect, childre
   view: TableView; positions: number[]; highlights: Map<number, { kind: Highlight; seat: number }>; selected?: number;
   onSelect: (space: number) => void; children: ReactNode;
 }) {
-  const live = view.phase !== 'lobby', spaces = spacesFor(view.theme);
+  const live = view.phase !== 'lobby', spaces = spacesFor(view.theme), face = faces(view.seats);
   return (
     <div className="ring-wrap"><div className="ring" data-testid="board">
       {spaces.map(space => {
@@ -84,7 +96,7 @@ export function Board({ view, positions, highlights, selected, onSelect, childre
         const corner = LOW_LABEL.has(spaces[at].kind) ? 1 : 0;
         const style = { '--row': row - 1, '--col': column - 1, '--stack': stack, '--corner': corner, background: SEAT_COLORS[index], color: SEAT_INK[index] } as CSSProperties;
         // The hop animation alternates name with the space's parity, so each one-space step replays it.
-        return <span key={seat.wallet} className={`token hop-${at % 2}`} style={style} data-testid={`token-${index}`} title={seat.name}>{seat.name.slice(0, 1).toUpperCase()}</span>;
+        return <span key={seat.wallet} className={`token hop-${at % 2}`} style={style} data-testid={`token-${index}`} title={seat.name}>{face[index]}</span>;
       })}
       <div className="rosette">{children}</div>
     </div></div>

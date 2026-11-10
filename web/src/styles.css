@@ -118,11 +118,18 @@ legend { font-weight: 800; font-stretch: 75%; text-transform: uppercase; margin-
 .head-home, .head-btn { display: none; }
 .head-btn { background: var(--ink); color: var(--white); border: 0; padding: 6px 12px; cursor: pointer; font-weight: 900; font-stretch: 75%; text-transform: uppercase; font-size: 1rem; }
 .invite-btn { background: var(--red); }
-.rent-toast { position: absolute; top: 24%; left: 50%; z-index: 5; transform: translateX(-50%); width: max-content; max-width: calc(100vw - 32px); margin: 0;
-  padding: 10px 16px 10px 14px; background: var(--ink); color: var(--white); border-left: 10px solid var(--yellow); box-shadow: 6px 6px 0 var(--red);
-  font-weight: 800; font-size: 1.05rem; text-align: left; animation: toast-in .25s ease-out; pointer-events: none; }
+/* Announcements: a bubble at the top of the board's middle for every event, like Plato's. */
+.announce { position: absolute; top: calc(1.6 * var(--u)); left: 50%; z-index: 3; transform: translateX(-50%); width: max-content; max-width: 88%; margin: 0;
+  display: flex; flex-direction: column; align-items: center; gap: calc(0.8 * var(--u)); padding: calc(1 * var(--u)) calc(2 * var(--u));
+  background: var(--white); color: var(--ink); border: calc(0.5 * var(--u)) solid var(--ink); box-shadow: calc(0.8 * var(--u)) calc(0.8 * var(--u)) 0 var(--ink);
+  font-weight: 800; font-size: clamp(11px, calc(2.6 * var(--u)), 16px); line-height: 1.15; text-align: center; animation: toast-in .25s ease-out; pointer-events: none; }
+.announce.rent, .announce.out, .announce.strike, .announce.jail { box-shadow: calc(0.8 * var(--u)) calc(0.8 * var(--u)) 0 var(--red); }
+.announce.salary, .announce.buy, .announce.trade { box-shadow: calc(0.8 * var(--u)) calc(0.8 * var(--u)) 0 var(--green); }
+.announce-deed { display: flex; flex-direction: column; min-width: calc(14 * var(--u)); border: calc(0.4 * var(--u)) solid var(--ink); font-weight: 900; font-stretch: 75%; text-transform: uppercase; }
+.announce-deed b { background: var(--group); color: var(--group-ink); padding: calc(0.3 * var(--u)) calc(1 * var(--u)); }
+.announce-deed { padding-bottom: calc(0.4 * var(--u)); }
 @keyframes toast-in { from { transform: translate(-50%, -16px); opacity: 0; } }
-@media (prefers-reduced-motion: reduce) { .rent-toast { animation: none; } }
+@media (prefers-reduced-motion: reduce) { .announce { animation: none; } }
 .head-act { flex: none; background: var(--white); border: 2px solid var(--ink); padding: 2px 8px; cursor: pointer; font-size: .72rem; font-weight: 800; text-transform: uppercase; letter-spacing: .04em; }
 .head-act.quit { border-color: var(--red); color: var(--red); }
 .btn.danger { background: var(--red); color: var(--white); }
@@ -209,7 +216,7 @@ legend { font-weight: 800; font-stretch: 75%; text-transform: uppercase; margin-
 .pips i.hotel { width: calc(3 * var(--u)); height: calc(2.2 * var(--u)); background: var(--red); box-shadow: inset 0 0 0 calc(0.35 * var(--u)) var(--ink); }
 .token {
   position: absolute; z-index: 2; width: calc(4.6 * var(--u)); aspect-ratio: 1; border-radius: 50%;
-  display: grid; place-items: center; font-weight: 900; font-size: calc(2.6 * var(--u));
+  display: grid; place-items: center; font-weight: 900; font-size: calc(2.7 * var(--u)); line-height: 1;
   border: calc(0.5 * var(--u)) solid var(--ink); box-shadow: 0 0 0 calc(0.3 * var(--u)) var(--white);
   left: calc(var(--pad) + var(--col) * (100cqi - 2 * var(--pad) + var(--gap)) / var(--cols) + 7.6 * var(--u) - var(--stack) * 3.4 * var(--u));
   top: calc(var(--pad) + var(--row) * (var(--h) - 2 * var(--pad) + var(--gap)) / var(--rows) + 4.4 * var(--u) - var(--corner, 0) * 3.6 * var(--u));
@@ -267,7 +274,7 @@ legend { font-weight: 800; font-stretch: 75%; text-transform: uppercase; margin-
 .seat-chip.turn { background: var(--yellow); box-shadow: 3px 3px 0 var(--ink); transform: translate(-1px, -1px); }
 .seat-chip.out { opacity: .45; }
 .seat-chip.open { background: none; border-style: dashed; border-top: 2px dashed var(--ink); color: var(--mid); }
-.seat-chip .player-token { width: 18px; height: 18px; font-size: .62rem; border-width: 1.5px; margin-right: 4px; vertical-align: -3px; display: inline-grid; }
+.seat-chip .player-token { width: 18px; height: 18px; font-size: .72rem; border-width: 1.5px; margin-right: 4px; vertical-align: -3px; display: inline-grid; }
 .seat-name { font-weight: 900; font-stretch: 75%; text-transform: uppercase; font-size: .82rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .seat-cash { font-weight: 900; font-size: 1.05rem; line-height: 1.1; font-variant-numeric: tabular-nums; }
 .seat-note { font-size: .66rem; font-weight: 700; color: var(--mid); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -321,7 +328,7 @@ legend { font-weight: 800; font-stretch: 75%; text-transform: uppercase; margin-
 .player:last-of-type { border-bottom: 0; }
 .player.turn { background: linear-gradient(var(--yellow), var(--yellow)) left / 6px 100% no-repeat; padding-left: 12px; }
 .player.out { opacity: .45; }
-.player-token { flex: none; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; font-weight: 900; font-size: 1.05rem; border: 2px solid var(--ink); }
+.player-token { flex: none; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; font-weight: 900; font-size: 1.15rem; border: 2px solid var(--ink); }
 .player-main { flex: 1; min-width: 0; }
 .player-name { font-weight: 900; font-stretch: 75%; text-transform: uppercase; font-size: 1.15rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .player-name em, .player-name small { font-style: normal; font-weight: 600; font-stretch: 100%; text-transform: none; color: var(--mid); font-size: .8rem; }
@@ -414,3 +421,11 @@ legend { font-weight: 800; font-stretch: 75%; text-transform: uppercase; margin-
 }
 @media (max-width: 859px) {
 }
+
+/* Quick play: one tap per table size. */
+.quick-play { display: flex; flex-direction: column; gap: 10px; }
+.quick-play label { max-width: 320px; }
+.quick-modes { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.quick-modes .btn { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 12px 8px; }
+.quick-modes .btn b { font-size: 1.25rem; }
+.quick-modes .btn small { font-size: .8rem; font-weight: 700; text-transform: none; opacity: .9; }

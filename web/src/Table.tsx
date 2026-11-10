@@ -8,10 +8,15 @@ import { NO_OFFER, NO_OWNER, canBuild, currentSeat, expectedPayouts, isActive, n
 import { acceptTrade, act, canReceive, client, friendlyError, joinTable, property, runCrank, subscribeTable, tableTransactions, trade, watchTableTransactions, type TableTransaction } from './lib/game';
 import { sounds, useSoundToggle } from './sound';
 import { RulesSheet } from './Rules';
-import { Board, Die, GROUP_COLORS, GROUP_INK, SEAT_COLORS, SEAT_INK, money, useDie, useTokenPositions, type Highlight } from './Board';
+import { Board, Die, GROUP_COLORS, GROUP_INK, SEAT_COLORS, SEAT_INK, faces, money, useDie, useTokenPositions, type Highlight } from './Board';
 import { PublicKey } from '@solana/web3.js';
 
 const clock = (seconds: number) => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
+/** The name you last played under, so every name field starts filled in. */
+const NAME_KEY = 'bankroll.name';
+export const savedName = () => { try { return localStorage.getItem(NAME_KEY) ?? ''; } catch { return ''; } };
+export const saveName = (name: string) => { try { localStorage.setItem(NAME_KEY, name); } catch { /* Convenience only. */ } };
+
 export const usdc = (atoms: number) => (atoms / TOKEN_SCALE).toFixed(2);
 const LAST_GAME = 'bankroll.lastGame';
 export function navigate(path: string) { history.pushState(null, '', path); dispatchEvent(new PopStateEvent('popstate')); }
@@ -48,7 +53,11 @@ function useTable(table: string) {
   return { view, connected, readError };
 }
 
-export interface FeedEntry { at: number; kind: 'roll' | 'buy' | 'sell' | 'build' | 'trade' | 'rent' | 'card' | 'jail' | 'strike' | 'out' | 'end'; text: string }
+export interface FeedEntry {
+  at: number; kind: 'roll' | 'salary' | 'buy' | 'sell' | 'build' | 'trade' | 'rent' | 'card' | 'jail' | 'bail' | 'strike' | 'out' | 'end'; text: string;
+  /** The property the entry is about, shown as a small deed in the announcement. */
+  space?: number;
+}
 
 /** A readable game log derived from consecutive table snapshots, kept per game in this browser. */
 function useFeed(view: TableView | undefined, key: string) {
@@ -62,20 +71,22 @@ function useFeed(view: TableView | undefined, key: string) {
     const lander = currentSeat(before);
     if (before.phase === 'playing' && before.stage === 'rolling' && view.stage !== 'rolling' && view.vrfNonce === before.vrfNonce && view.lastRoll) {
       added.push({ at, kind: 'roll', text: `${name(lander)} rolled a ${view.lastRoll}${view.lastCard ? '' : ` to ${spacesFor(view.theme)[view.seats[lander].position].name}`}` });
+      // Mirrors the program: the roll itself carrying the token past Start pays the salary.
+      if (before.seats[lander].position + view.lastRoll >= board.spaces.length) added.push({ at, kind: 'salary', text: `${name(lander)} passed Start and collected ${money(board.rules.salary)}` });
       if (view.lastCard) added.push({ at, kind: 'card', text: `${name(lander)} drew: ${board.luckyDeck[view.lastCard - 1].text}` });
-      const lot = view.board[view.seats[lander].position];
+      const landed = view.seats[lander].position, lot = view.board[landed];
       if (lot.owner !== NO_OWNER && lot.owner !== lander) {
         const paid = view.seats[lot.owner].cash - before.seats[lot.owner].cash;
-        if (paid > 0) added.push({ at, kind: 'rent', text: `${name(lander)} paid ${money(paid)} rent to ${name(lot.owner)}` });
+        if (paid > 0) added.push({ at, kind: 'rent', space: landed, text: `${name(lander)} paid ${money(paid)} rent to ${name(lot.owner)}` });
       }
     }
     const moved: { space: number; from: number; to: number }[] = [];
     view.board.forEach((lot, space) => {
       const was = before.board[space];
-      if (was.owner === NO_OWNER && lot.owner !== NO_OWNER) added.push({ at, kind: 'buy', text: `${name(lot.owner)} bought ${spacesFor(view.theme)[space].name} for ${money(spacesFor(view.theme)[space].price ?? 0)}` });
-      else if (was.owner !== NO_OWNER && lot.owner === NO_OWNER && before.phase === 'playing' && view.phase === 'playing' && !view.seats[was.owner]?.eliminatedAt) added.push({ at, kind: 'sell', text: `${name(was.owner)} sold ${spacesFor(view.theme)[space].name}` });
+      if (was.owner === NO_OWNER && lot.owner !== NO_OWNER) added.push({ at, kind: 'buy', space, text: `${name(lot.owner)} bought ${spacesFor(view.theme)[space].name} for ${money(spacesFor(view.theme)[space].price ?? 0)}` });
+      else if (was.owner !== NO_OWNER && lot.owner === NO_OWNER && before.phase === 'playing' && view.phase === 'playing' && !view.seats[was.owner]?.eliminatedAt) added.push({ at, kind: 'sell', space, text: `${name(was.owner)} sold ${spacesFor(view.theme)[space].name}` });
       else if (was.owner !== NO_OWNER && lot.owner !== NO_OWNER && was.owner !== lot.owner) moved.push({ space, from: was.owner, to: lot.owner });
-      if (lot.owner === was.owner && lot.buildings > was.buildings) added.push({ at, kind: 'build', text: `${name(lot.owner)} built ${lot.buildings === HOTEL ? 'a hotel' : `house ${lot.buildings}`} on ${spacesFor(view.theme)[space].name}` });
+      if (lot.owner === was.owner && lot.buildings > was.buildings) added.push({ at, kind: 'build', space, text: `${name(lot.owner)} built ${lot.buildings === HOTEL ? 'a hotel' : `house ${lot.buildings}`} on ${spacesFor(view.theme)[space].name}` });
     });
     // A swap is two lots that changed hands in opposite directions; pairing them survives coalesced updates.
     for (const [i, x] of moved.entries()) {
@@ -86,7 +97,11 @@ function useFeed(view: TableView | undefined, key: string) {
       const was = before.seats[index];
       if (!was) return;
       if (seat.strikes > was.strikes) added.push({ at, kind: 'strike', text: `${seat.name} ran out of time (strike ${seat.strikes} of ${board.rules.strikesToForfeit})` });
-      if (seat.jailTurns > 0 && was.jailTurns === 0) added.push({ at, kind: 'jail', text: `${seat.name} went to jail` });
+      const turns = (count: number) => `${count} turn${count === 1 ? '' : 's'}`;
+      if (seat.jailTurns > 0 && was.jailTurns === 0) added.push({ at, kind: 'jail', text: `${seat.name} went to jail for ${turns(seat.jailTurns)}` });
+      else if (seat.jailTurns > 0 && seat.jailTurns < was.jailTurns) added.push({ at, kind: 'jail', text: `${seat.name} sits in jail: ${turns(seat.jailTurns)} left` });
+      else if (seat.jailTurns === 0 && was.jailTurns > 0 && !seat.eliminatedAt) added.push(was.cash - seat.cash === board.rules.bail && before.stage === 'preroll'
+        ? { at, kind: 'bail', text: `${seat.name} paid ${money(board.rules.bail)} to get out of jail` } : { at, kind: 'jail', text: `${seat.name} is out of jail` });
       // A forfeit is the only way out with no payment behind it: not a roll, a swap, a bail or a seat already in debt.
       const bankrupt = before.stage === 'rolling' || moved.length > 0 || was.cash < 0 || (was.jailTurns > 0 && seat.jailTurns === 0);
       if (seat.eliminatedAt && !was.eliminatedAt) added.push({ at, kind: 'out', text: seat.strikes >= board.rules.strikesToForfeit ? `${seat.name} forfeited after ${board.rules.strikesToForfeit} strikes`
@@ -103,11 +118,15 @@ function useFeed(view: TableView | undefined, key: string) {
   return feed;
 }
 
-/** The newest rent payment or player out, shown for a few seconds once every token has finished walking. */
-function useRentToast(feed: FeedEntry[], landed: boolean) {
+/** Feed kinds the board announces. Rolls show on the die and Lucky cards on their own reveal. */
+const ANNOUNCED = new Set<FeedEntry['kind']>(['salary', 'buy', 'sell', 'build', 'trade', 'rent', 'jail', 'bail', 'strike', 'out']);
+
+/** Plato-style announcements: every event in turn, in the middle of the board, once every token has
+ * finished walking. Each shows for a few seconds, less while more are waiting. */
+function useAnnouncement(feed: FeedEntry[], landed: boolean) {
   const seen = useRef(feed[0]?.at ?? 0), [queue, setQueue] = useState<FeedEntry[]>([]), [shown, setShown] = useState<FeedEntry>();
   useEffect(() => {
-    const fresh = feed.filter(entry => (entry.kind === 'rent' || entry.kind === 'out') && entry.at > seen.current).reverse();
+    const fresh = feed.filter(entry => ANNOUNCED.has(entry.kind) && entry.at > seen.current).reverse();
     seen.current = Math.max(seen.current, feed[0]?.at ?? 0);
     if (fresh.length) setQueue(current => [...current, ...fresh]);
   }, [feed]);
@@ -117,10 +136,23 @@ function useRentToast(feed: FeedEntry[], landed: boolean) {
   }, [queue, landed, shown]);
   useEffect(() => {
     if (!shown) return;
-    const timer = setTimeout(() => setShown(undefined), 3500);
+    const timer = setTimeout(() => setShown(undefined), queue.length ? 1800 : 3000);
     return () => clearTimeout(timer);
-  }, [shown]);
+  }, [shown, queue.length]);
   return shown;
+}
+
+/** The announcement bubble in the middle of the board; a purchase also shows the property's color and price. */
+function Announcement({ view, entry }: { view: TableView; entry: FeedEntry }) {
+  const space = entry.kind === 'buy' && entry.space !== undefined ? spacesFor(view.theme)[entry.space] : undefined;
+  const group = space?.group && space.group !== 'Public' ? space.group : undefined;
+  return (
+    <p className={`announce ${entry.kind}`} role="status" data-testid="announcement" data-kind={entry.kind}>
+      <span>{entry.text}</span>
+      {space && <span className="announce-deed" style={{ '--group': group ? GROUP_COLORS[group] : 'var(--ink)', '--group-ink': group ? GROUP_INK[group] : 'var(--white)' } as CSSProperties}>
+        <b>{money(space.price ?? 0)}</b>{space.name}</span>}
+    </p>
+  );
 }
 
 /** The Lucky card the latest roll drew, tied to that roll and hidden once the next roll starts. */
@@ -148,7 +180,7 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
 }) {
   const { view, connected, readError } = useTable(table);
   const { busy, error, run } = useBusy(), now = useNow();
-  const [selected, setSelected] = useState<number>(), [requested, setRequested] = useState(false), [name, setName] = useState('');
+  const [selected, setSelected] = useState<number>(), [requested, setRequested] = useState(false), [name, setName] = useState(savedName);
   const [inviteOpen, setInviteOpen] = useState(false), [rulesOpen, setRulesOpen] = useState(false), [quitting, setQuitting] = useState(false);
   const seat = view ? view.seats.findIndex(item => item.wallet === me) : -1, current = view && nonce === view.gameNonce;
   const feed = useFeed(current ? view : undefined, `bankroll.feed.${table}.${nonce}`);
@@ -157,7 +189,7 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
   const positions = useTokenPositions(current ? view : undefined, die.settleAt);
   // Every token has finished its walk: the buy prompt and rent toasts wait for this.
   const landed = !die.tumbling && !!view && positions.every((at, index) => at === view.seats[index]?.position);
-  const rentToast = useRentToast(feed, landed);
+  const announcement = useAnnouncement(feed, landed);
   const prefix = demo ? '/demo' : '', home = demo ? '/demo' : '/', invite = `${location.origin}${prefix}/play/${table}/${nonce}`;
   useEffect(() => (current && seat >= 0 ? runCrank(table, signer) : undefined), [table, signer, current, seat]);
   const yourTurn = !!current && view.phase === 'playing' && view.stage === 'preroll' && seat >= 0 && seat === currentSeat(view);
@@ -234,11 +266,11 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
 
       <div className="table-grid">
         <div className="board-col">
-        {rentToast && <p key={rentToast.at} className="rent-toast" role="status" data-testid="rent-toast">{rentToast.text}</p>}
           <SeatStrip view={view} me={me} />
           <Board view={view} positions={positions} highlights={highlights} selected={selected} onSelect={space => setSelected(space === selected ? undefined : space)}>
             <Center view={view} seat={seat} myTurn={myTurn} left={left} now={now} busy={busy} die={die} landed={landed} card={card} timedOut={timedOut} demo={demo} home={home}
               onRoll={action('roll')} onBail={action('bail')} onStart={action('start')} onCancel={action('cancel')} onBuy={action('buy')} onPass={action('pass')} />
+            {announcement && <Announcement key={announcement.at} view={view} entry={announcement} />}
           </Board>
         </div>
 
@@ -256,7 +288,7 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
           </section>}
 
           {view.phase === 'lobby' && seat < 0 && view.playerCount < view.maxPlayers && <JoinForm view={view} name={name} setName={setName} busy={busy} demo={demo} openWallet={openWallet}
-            onJoin={() => void run(async () => { await joinTable(table, nonce, name.trim(), view.entry); if (!demo) refresh(); })} />}
+            onJoin={() => void run(async () => { saveName(name.trim()); await joinTable(table, nonce, name.trim(), view.entry); if (!demo) refresh(); })} />}
           {view.phase === 'lobby' && <section className="panel invite"><h2>Invite friends</h2><InviteBody invite={invite} size={132} /></section>}
 
           {view.phase === 'playing' && view.stage === 'buydecision' && landed && <PropertyCard view={view} space={view.seats[turnSeat].position} seat={seat}
@@ -388,7 +420,7 @@ function SeatStrip({ view, me }: { view: TableView; me: string }) {
       const out = seat.eliminatedAt > 0, worth = netWorth(view, index);
       return (
         <div key={seat.wallet} className={`seat-chip${index === turn ? ' turn' : ''}${out ? ' out' : ''}`} style={{ '--seat': SEAT_COLORS[index] } as CSSProperties} data-testid={`seat-chip-${index}`}>
-          <span className="seat-name"><span className="player-token" style={{ background: SEAT_COLORS[index], color: SEAT_INK[index] }}>{seat.name.slice(0, 1).toUpperCase()}</span>
+          <span className="seat-name"><span className="player-token" style={{ background: SEAT_COLORS[index], color: SEAT_INK[index] }}>{faces(view.seats)[index]}</span>
             {seat.wallet === me ? 'You' : seat.name}</span>
           {live && <span className={`seat-cash${seat.cash < 0 ? ' neg' : ''}`}>{money(seat.cash)}</span>}
           {live && <span className="seat-note">{out ? 'Out' : seat.jailTurns > 0 ? 'In jail' : `Worth ${money(worth)}`}</span>}
@@ -408,7 +440,7 @@ function Players({ view, me }: { view: TableView; me: string }) {
         const status = out ? (seat.strikes >= board.rules.strikesToForfeit ? 'Forfeited' : 'Bankrupt') : seat.jailTurns ? `In jail, ${seat.jailTurns} left` : seat.cash < 0 ? 'In debt' : '';
         return (
           <div key={seat.wallet} className={`player${turn ? ' turn' : ''}${out ? ' out' : ''}`} data-testid={`player-${index}`} data-cash={seat.cash} data-networth={worth} data-out={out ? 'yes' : 'no'}>
-            <span className="player-token" style={{ background: SEAT_COLORS[index], color: SEAT_INK[index] }}>{seat.name.slice(0, 1).toUpperCase()}</span>
+            <span className="player-token" style={{ background: SEAT_COLORS[index], color: SEAT_INK[index] }}>{faces(view.seats)[index]}</span>
             <div className="player-main">
               <div className="player-name">{seat.name}{seat.wallet === me && <em> (you)</em>}{view.host === seat.wallet && <small> host</small>}</div>
               {live && !out && <div className="progress" title={`${money(worth)} of ${money(view.target)}`}><i style={{ width: `${Math.max(0, Math.min(100, worth / view.target * 100))}%`, background: SEAT_COLORS[index] }} /></div>}
@@ -475,7 +507,8 @@ function PropertyCard({ view, space: index, seat, heading, onClose, children }: 
   view: TableView; space: number; seat: number; heading: string; onClose?: () => void; children?: ReactNode;
 }) {
   const space = spacesFor(view.theme)[index], lot = view.board[index];
-  const color = space.group ? GROUP_COLORS[space.group] : '#2C4466';
+  // Publics have no color on the board, so their deed header is ink.
+  const color = space.group && space.group !== 'Public' ? GROUP_COLORS[space.group] : '#111111';
   if (!isProperty(space)) return (
     <section className="panel deed plain" data-testid="property-card">
       <header><b>{space.name}</b>{onClose && <button className="close" onClick={onClose} aria-label="Close">×</button>}</header>
@@ -489,9 +522,10 @@ function PropertyCard({ view, space: index, seat, heading, onClose, children }: 
   const current = lot.owner === NO_OWNER ? -1 : rent(view, index);
   return (
     <section className="panel deed" data-testid="property-card" data-space={index}>
-      <header style={{ background: color, color: space.group ? GROUP_INK[space.group] : '#FFFFFF' }}><small>{heading}</small><b>{space.name}</b>{onClose && <button className="close" onClick={onClose} aria-label="Close">×</button>}</header>
+      <header style={{ background: color, color: space.group && space.group !== 'Public' ? GROUP_INK[space.group] : '#FFFFFF' }}><small>{heading}</small><b>{space.name}</b>{onClose && <button className="close" onClick={onClose} aria-label="Close">×</button>}</header>
       <p className="deed-line">{space.group === 'Public' ? 'Public property' : `${space.group} group`}, price {money(space.price ?? 0)}{space.buildingCost ? `, houses and hotel ${money(space.buildingCost)} each` : '. No houses here: rent grows with each public property the owner holds.'}</p>
       <table><tbody>{ladder.map(([label, value]) => <tr key={label} className={value === current ? 'now' : ''}><td>{label}</td><td>{money(value)}</td></tr>)}</tbody></table>
+      <p className="deed-line">Sells back to the bank for {money(saleValue(view, index))}{lot.buildings ? ', buildings included' : ''}.</p>
       <p className="deed-line">{lot.owner === NO_OWNER ? 'For sale' : `Owned by ${lot.owner === seat ? 'you' : view.seats[lot.owner].name}${lot.buildings ? `, ${lot.buildings === HOTEL ? 'a hotel' : buildingLabel(lot.buildings)}` : ''}`}</p>
       {children}
     </section>
@@ -599,7 +633,7 @@ function Results({ view, me, demo, home, openWallet }: { view: TableView; me: st
       <h2>{demo ? 'Final standings' : settled ? 'Paid out' : 'Game over, paying out…'}</h2>
       <ol>{ranked.map((item, place) => (
         <li key={item.seat.wallet} data-testid={`result-${item.index}`} data-payout={item.payout}>
-          <span className="place">{place + 1}</span><span className="player-token" style={{ background: SEAT_COLORS[item.index], color: SEAT_INK[item.index] }}>{item.seat.name.slice(0, 1).toUpperCase()}</span>
+          <span className="place">{place + 1}</span><span className="player-token" style={{ background: SEAT_COLORS[item.index], color: SEAT_INK[item.index] }}>{faces(view.seats)[item.index]}</span>
           <span className="result-name">{item.seat.name}{item.seat.wallet === me && <em> (you)</em>}
             <small>{item.seat.eliminatedAt ? (item.seat.strikes >= board.rules.strikesToForfeit ? 'forfeited' : 'bankrupt') : demo ? '' : `net worth ${money(netWorth(view, item.index))}`}</small></span>
           <span className="mint">{demo ? (item.seat.eliminatedAt ? '' : money(netWorth(view, item.index))) : `${usdc(item.payout)} USDC`}</span>

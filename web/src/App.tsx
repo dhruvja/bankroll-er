@@ -3,11 +3,11 @@ import { PublicKey, type Keypair } from '@solana/web3.js';
 import { defaultTarget } from '../../shared/board';
 import { DEMO_ENTRY, PAID_ENTRIES, PROTOCOL_FEE_BPS, RELAY_FEE, SHARES_BPS, WITHDRAW_MINIMUM } from '../../shared/config';
 import type { TableView } from '../../shared/chain';
-import { client, deposit, getWalletInfo, listLobbies, openTable, wallet, withdraw, type WalletInfo } from './lib/game';
+import { client, deposit, getWalletInfo, joinTable, listLobbies, openTable, wallet, withdraw, type WalletInfo } from './lib/game';
 import { exportWallet } from './lib/wallet';
 import { GROUP_COLORS, SEAT_COLORS, money } from './Board';
 import { THEMES, spacesFor } from '../../shared/themes';
-import { TableScreen, lastGamePath, navigate, useBusy, usdc } from './Table';
+import { TableScreen, lastGamePath, navigate, saveName, savedName, useBusy, usdc } from './Table';
 import { Rules } from './Rules';
 
 function usePath() {
@@ -97,6 +97,7 @@ function Home({ demo, info, refresh, openWallet }: { demo: boolean; info?: Walle
           {demo ? 'Play for devnet USDC instead →' : 'Just trying it out? Play the free demo →'}</a>
       </section>
       <Resume />
+      <QuickPlay demo={demo} info={info} refresh={refresh} openWallet={openWallet} />
       <div className="home-grid">
         <OpenTableForm demo={demo} info={info} refresh={refresh} openWallet={openWallet} />
         <div className="home-side">
@@ -160,13 +161,56 @@ function Resume() {
   );
 }
 
+/** Quick play with no server: everything is read from the rollup. It joins the fullest lobby of
+ * that size and entry that still has time left (a seat can go between reading and joining, so it
+ * tries the next), and opens a new table on the Classic board when none is waiting. */
+function QuickPlay({ demo, info, refresh, openWallet }: { demo: boolean; info?: WalletInfo; refresh: () => void; openWallet: () => void }) {
+  const { busy, error, run } = useBusy(), [name, setName] = useState(savedName);
+  const entry = demo ? DEMO_ENTRY : PAID_ENTRIES[0], prefix = demo ? '/demo' : '';
+  const play = (players: number) => void run(async () => {
+    const trimmed = name.trim();
+    if (!trimmed) throw new Error('Pick a name first.');
+    saveName(trimmed);
+    const me = (await wallet()).publicKey.toBase58(), soon = Date.now() / 1000 + 30;
+    const waiting = (await listLobbies())
+      .filter(table => table.entry === entry && table.maxPlayers === players && table.playerCount < players && table.lobbyDeadline > soon && !table.seats.some(seat => seat.wallet === me))
+      .sort((a, b) => b.playerCount - a.playerCount || a.lobbyDeadline - b.lobbyDeadline);
+    for (const table of waiting) {
+      try {
+        await joinTable(table.address, table.gameNonce, trimmed, entry);
+        if (!demo) refresh();
+        navigate(`${prefix}/play/${table.address}/${table.gameNonce}`);
+        return;
+      } catch { /* Filled or closed since we read it: try the next one. */ }
+    }
+    const opened = await openTable({ name: trimmed, entry, maxPlayers: players, target: defaultTarget(players), theme: 0 });
+    if (!demo) refresh();
+    navigate(`${prefix}/play/${opened.table}/${opened.nonce}`);
+  });
+  const short = !demo && info?.play !== null && info?.play !== undefined && info.play * 1e6 < entry;
+  return (
+    <section className="panel quick-play" data-testid="quick-play">
+      <h2>Quick play</h2>
+      <p className="quiet">Jump into a table that is waiting for players, or open one if none is. {demo ? 'Free.' : `${usdc(entry)} USDC entry.`}</p>
+      <label>Your name<input data-testid="quick-name" maxLength={16} value={name} onChange={event => setName(event.target.value)} autoComplete="nickname" /></label>
+      <div className="quick-modes">{[2, 3, 4].map(players => (
+        <button key={players} className="btn primary" data-testid={`quick-${players}`} disabled={busy} onClick={() => play(players)}>
+          <b>{players} players</b><small>First to {money(defaultTarget(players))}</small></button>))}</div>
+      {busy && <p className="quiet">Finding you a table…</p>}
+      {short && <p className="quiet">Your play balance is short, so this first moves USDC in from your wallet (0.20 USDC fee, no SOL). <button type="button" className="linkish" onClick={openWallet}>Open wallet</button></p>}
+      {error && <p className="error" data-testid="quick-error">{error}</p>}
+    </section>
+  );
+}
+
 function OpenTableForm({ demo, info, refresh, openWallet }: { demo: boolean; info?: WalletInfo; refresh: () => void; openWallet: () => void }) {
   const { busy, error, run } = useBusy();
-  const [name, setName] = useState(''), [players, setPlayers] = useState(2), [theme, setTheme] = useState(0), [paidEntry, setPaidEntry] = useState<number>(PAID_ENTRIES[0]);
+  const [name, setName] = useState(savedName), [players, setPlayers] = useState(2), [theme, setTheme] = useState(0), [paidEntry, setPaidEntry] = useState<number>(PAID_ENTRIES[0]);
   const entry = demo ? DEMO_ENTRY : paidEntry;
   const submit = (event: FormEvent) => {
     event.preventDefault();
     void run(async () => {
+      saveName(name.trim());
       const opened = await openTable({ name: name.trim(), entry, maxPlayers: players, target: defaultTarget(players), theme });
       if (!demo) refresh();
       navigate(`${demo ? '/demo' : ''}/play/${opened.table}/${opened.nonce}`);
