@@ -226,14 +226,17 @@ export async function addBot(view: TableView) {
   record(await client.joinTable(new PublicKey(view.address), keys[index], view.gameNonce, BOT_NAMES[index]));
 }
 
-/** Plays `bot`'s seat from this tab: after a short pause on each new snapshot (so the dice and tokens
- * land first), it sends the move `botMove` picks. A failed move waits for the next snapshot or 3 s. */
-export function runBot(table: string, bot: Keypair, thinkMs = 1_800) {
+/** Plays `bot`'s seat from this tab. It waits until `calm` says the screen has caught up (dice
+ * stopped, tokens landed, announcements done), then pauses `thinkMs` and sends the move `botMove`
+ * picks. A failed move waits for the next snapshot or 3 s. */
+export function runBot(table: string, bot: Keypair, calm: () => boolean, thinkMs = 900) {
   const address = new PublicKey(table), wallet = bot.publicKey.toBase58();
-  let view: TableView | undefined, handled: TableView | undefined, seenAt = 0, retryAt = 0, busy = false, stopped = false;
+  let view: TableView | undefined, handled: TableView | undefined, seenAt = 0, calmSince = 0, retryAt = 0, busy = false, stopped = false;
   const unsubscribe = client.subscribeTable(address, next => { view = next; seenAt = Date.now(); });
   const timer = setInterval(() => {
-    if (busy || stopped || !view || view === handled || Date.now() < Math.max(seenAt + thinkMs, retryAt)) return;
+    if (!calm()) { calmSince = 0; return; }
+    calmSince ||= Date.now();
+    if (busy || stopped || !view || view === handled || Date.now() < Math.max(seenAt, calmSince) + thinkMs || Date.now() < retryAt) return;
     const snapshot = view, seat = snapshot.seats.findIndex(item => item.wallet === wallet);
     const move = seat >= 0 ? botMove(snapshot, seat, Date.now() / 1000) : undefined;
     if (!move) return;

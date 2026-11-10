@@ -164,7 +164,7 @@ function useAnnouncement(feed: FeedEntry[], landed: boolean) {
     const timer = setTimeout(() => setShown(undefined), shown.kind === 'card' ? 1200 : queue.length ? 1800 : 3000);
     return () => clearTimeout(timer);
   }, [shown, queue.length]);
-  return shown;
+  return { shown, queued: queue.length > 0 };
 }
 
 const LUCKY_SPACE = board.spaces.findIndex(space => space.kind === 'lucky');
@@ -274,7 +274,10 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
   const positions = useTokenPositions(view, die.settleAt);
   // Every token has finished its walk: the buy prompt and rent toasts wait for this.
   const landed = !die.tumbling && !!view && positions.every((at, index) => at === view.seats[index]?.position);
-  const announcement = useAnnouncement(feed, landed);
+  const { shown: announcement, queued } = useAnnouncement(feed, landed);
+  // Bots move only once the screen has caught up: dice stopped, tokens landed, announcements done.
+  const calm = landed && !announcement && !queued, calmRef = useRef(calm);
+  useEffect(() => { calmRef.current = calm; }, [calm]);
   // Once per announcement, with the table as it is when the announcement shows.
   useEffect(() => { if (announcement && view) playEffect(announcement, view); }, [announcement]);
   const buying = view?.phase === 'playing' && view.stage === 'buydecision' && landed ? view.seats[currentSeat(view)].position : undefined;
@@ -286,7 +289,7 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
   const botWallets = live && view ? view.seats.map(item => item.wallet).filter(wallet => botFor(wallet)).join(',') : '';
   useEffect(() => {
     if (!botWallets) return;
-    const stops = botWallets.split(',').map(wallet => runBot(table, botFor(wallet)!));
+    const stops = botWallets.split(',').map(wallet => runBot(table, botFor(wallet)!, () => calmRef.current));
     return () => stops.forEach(stop => stop());
   }, [table, botWallets]);
   const yourTurn = !!view && view.phase === 'playing' && view.stage === 'preroll' && seat >= 0 && seat === currentSeat(view);
@@ -365,6 +368,7 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
       <div className="table-grid">
         <div className="board-col">
           <SeatStrip view={view} me={me} />
+          {view.phase === 'playing' && seat >= 0 && <Holdings view={view} seat={seat} buildNow={myTurn && view.stage === 'preroll'} onSelect={setSelected} strip />}
           <Board view={view} positions={positions} highlights={highlights} selected={selected} onSelect={space => setSelected(space === selected ? undefined : space)}>
             <Center view={view} seat={seat} myTurn={myTurn} left={left} now={now} busy={busy} die={die} landed={landed} card={card} timedOut={timedOut} demo={demo} home={home}
               onRoll={action('roll')} onBail={action('bail')} onStart={action('start')} onCancel={action('cancel')} onBuy={action('buy')} onPass={action('pass')}
@@ -633,17 +637,21 @@ function PropertyCard({ view, space: index, seat, heading, onClose, motion, chil
   );
 }
 
-function Holdings({ view, seat, buildNow, onSelect }: { view: TableView; seat: number; buildNow: boolean; onSelect: (space: number) => void }) {
+/** Your properties: a panel beside the board on desktop, or (`strip`) one scrolling row under the
+ * seat tiles on phones, where the side panels are hidden. Tap one to open its card. */
+function Holdings({ view, seat, buildNow, onSelect, strip = false }: { view: TableView; seat: number; buildNow: boolean; onSelect: (space: number) => void; strip?: boolean }) {
   const owned = spacesFor(view.theme).filter(space => view.board[space.index].owner === seat);
   if (!owned.length) return null;
+  const chips = owned.map(space => (
+    <button key={space.index} className="chip" data-testid={`${strip ? 'strip-' : ''}holding-${space.index}`}
+      data-can-build={buildNow && canBuild(view, seat, space.index) ? 'yes' : 'no'} data-cost={space.buildingCost ?? 0} onClick={() => onSelect(space.index)} style={{ borderColor: GROUP_COLORS[space.group ?? 'Public'] }}>
+      {space.name}{view.board[space.index].buildings > 0 && <span className="chip-pips">{view.board[space.index].buildings === HOTEL ? 'Hotel' : '▪'.repeat(view.board[space.index].buildings)}</span>}
+    </button>));
+  if (strip) return <div className="holdings-strip" data-testid="holdings-strip" role="group" aria-label="Your properties">{chips}</div>;
   return (
     <section className="panel holdings">
       <h2>Your properties</h2>
-      <div className="chips">{owned.map(space => (
-        <button key={space.index} className="chip" data-testid={`holding-${space.index}`}
-          data-can-build={buildNow && canBuild(view, seat, space.index) ? 'yes' : 'no'} data-cost={space.buildingCost ?? 0} onClick={() => onSelect(space.index)} style={{ borderColor: GROUP_COLORS[space.group ?? 'Public'] }}>
-          {space.name}{view.board[space.index].buildings > 0 && <span className="chip-pips">{view.board[space.index].buildings === HOTEL ? 'Hotel' : '▪'.repeat(view.board[space.index].buildings)}</span>}
-        </button>))}</div>
+      <div className="chips">{chips}</div>
       <p className="quiet">Tap one to build or sell. Building needs the whole color group, on your turn before you roll.</p>
     </section>
   );

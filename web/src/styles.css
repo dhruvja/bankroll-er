@@ -312,6 +312,11 @@ legend { font-weight: 800; font-stretch: 75%; text-transform: uppercase; margin-
   .cell-name { font-stretch: 62%; overflow-wrap: normal; font-size: clamp(7.5px, calc(2.4 * var(--u)), 15px); padding: 0 calc(0.6 * var(--u)) calc(0.8 * var(--u)); }
   /* The square board, as big as the screen allows under the header and seat tiles. */
   .board-col .ring-wrap { width: min(100%, calc(100dvh - 190px - env(safe-area-inset-top) - env(safe-area-inset-bottom))); margin: 0 auto; }
+  /* Your properties in one row that scrolls sideways; the board gives up the row's height. */
+  .board-col .holdings-strip { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; padding: 1px 0 2px; }
+  .holdings-strip::-webkit-scrollbar { display: none; }
+  .holdings-strip .chip { flex: none; padding: 3px 9px; font-size: .78rem; white-space: nowrap; }
+  .board-col:has(.holdings-strip) .ring-wrap { width: min(100%, calc(100dvh - 222px - env(safe-area-inset-top) - env(safe-area-inset-bottom))); }
   .side { position: fixed; left: 8px; right: 8px; bottom: max(8px, env(safe-area-inset-bottom)); z-index: 40; display: flex; flex-direction: column; gap: 8px; max-height: 70dvh; overflow-y: auto; pointer-events: none; }
   .side > :not(.pop) { display: none; }
   .side > .pop { pointer-events: auto; margin: 0; box-shadow: 6px 6px 0 var(--ink); }
@@ -365,6 +370,8 @@ legend { font-weight: 800; font-stretch: 75%; text-transform: uppercase; margin-
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .chip { background: var(--white); border: 2px solid; border-radius: 0; padding: 4px 12px; cursor: pointer; font-size: .88rem; font-weight: 800; font-stretch: 75%; text-transform: uppercase; }
 .chip-pips { margin-left: 4px; }
+.chip[data-can-build="yes"] { background: var(--yellow); }
+.holdings-strip { display: none; }
 
 .trade { background: var(--yellow); }
 .offers { display: flex; flex-wrap: wrap; gap: 8px; margin: 10px 0; }
