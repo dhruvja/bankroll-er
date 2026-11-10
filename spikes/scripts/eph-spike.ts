@@ -14,13 +14,13 @@ import {
 import { invariant } from '../shared/config';
 import { DirectChainClient } from '../shared/client';
 
-const PROGRAM = new PublicKey('6ry644nw1mhuggqxWPVAZLwpyDwbsPvPydSkBVMzWD7X');
+const PROGRAM = new PublicKey(process.env.SPIKE_PROGRAM ?? '6ry644nw1mhuggqxWPVAZLwpyDwbsPvPydSkBVMzWD7X');
 const VRF_PROGRAM = new PublicKey('Vrf1RNUjXmQGjmQrQLvJHs9SNkvDJEsRVFPkfSQUwGz');
 const EPHEMERAL_QUEUE = new PublicKey('5hBR571xnXppuCPveTrctfTU7tJLSN94nq7kv7FRK5Tc');
 const MAGIC_PROGRAM = new PublicKey('Magic11111111111111111111111111111111111111');
 const EPHEMERAL_VAULT = new PublicKey('MagicVau1t999999999999999999999999999999999');
 const TABLE_SPACE = 1503, RENT = (TABLE_SPACE + 60) * 32;
-const SPONSOR_FUNDING = 20_000_000; // 0.02 SOL: about 400 tables open at once
+const SPONSOR_FUNDING = Number(process.env.SPONSOR_FUNDING ?? 20_000_000); // default 0.02 SOL: about 400 tables open at once
 const ARTIFACTS = resolve(import.meta.dirname, '../../../plans/bankroll/artifacts/eph-spike');
 
 const { base, er } = new DirectChainClient();
@@ -82,6 +82,7 @@ interface TableView { id: bigint; host: string; nonce: bigint; pending: boolean;
 async function readTable(id: bigint): Promise<TableView | null> {
   const info = await er.getAccountInfo(tableAddress(id), 'confirmed');
   if (!info) return null;
+  if (info.data.length < 63) return { raw: true, owner: info.owner.toBase58(), lamports: info.lamports, size: info.data.length } as unknown as TableView;
   const d = info.data;
   return { id: d.readBigUInt64LE(8), host: new PublicKey(d.subarray(16, 48)).toBase58(), nonce: d.readBigUInt64LE(48), pending: d[56] === 1,
     die: d[57], fulfilled: d.readUInt32LE(58), owner: info.owner.toBase58(), size: d.length };
@@ -121,6 +122,79 @@ async function rollUntilCallback(host: Keypair, id: bigint) {
     await sleep(50);
   }
   throw new Error(`No VRF callback within 30 s for ${sent.signature}`);
+}
+
+
+const mode = process.env.SPIKE_MODE ?? 'lifecycle';
+if (mode === 'unblock') {
+  // Audit L-1 fix candidate: a permissionless base-layer sweep of SOL sent to an unused table address.
+  const host = Keypair.generate(), sweeper = admin;
+  const report: Record<string, unknown> = { program: PROGRAM.toBase58(), mode };
+  report.setup = await setup();
+  const id = BigInt(Date.now()), table = tableAddress(id);
+  const unblockIx = new TransactionInstruction({ programId: PROGRAM, data: Buffer.concat([disc('unblock_table'), u64(id)]),
+    keys: [meta(sweeper.publicKey, true, true), meta(table, false, true), meta(SystemProgram.programId, false, false)] });
+  report.id = id.toString(); report.table = table.toBase58();
+  report.prefund = await sendBase([SystemProgram.transfer({ fromPubkey: admin.publicKey, toPubkey: table, lamports: 1_000_000 })], [admin]);
+  await sleep(3000);
+  report.blockedCreate = await sendEr([lifecycleIx('create_table', host.publicKey, id)], [host]);
+  const sweeperBefore = await base.getBalance(sweeper.publicKey);
+  report.unblock = await sendBase([unblockIx], [sweeper]);
+  report.sweeperDelta = (await base.getBalance(sweeper.publicKey)) - sweeperBefore;
+  report.baseAfterUnblock = await base.getAccountInfo(table);
+  const started = Date.now();
+  let erView: unknown = 'still cloned';
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const info = await er.getAccountInfo(table, 'confirmed');
+    if (!info || info.lamports === 0) { erView = info ? { lamports: info.lamports, owner: info.owner.toBase58() } : null; break; }
+    await sleep(500);
+  }
+  report.erAfterUnblock = { view: erView, waitedMs: Date.now() - started };
+  report.createAfterUnblock = await sendEr([lifecycleIx('create_table', host.publicKey, id)], [host]);
+  report.tableAfterUnblock = await readTable(id);
+  if ((report.tableAfterUnblock as { owner?: string } | null)?.owner === PROGRAM.toBase58()) {
+    report.roll = await rollUntilCallback(host, id).catch(error => String(error));
+    report.close = await sendEr([lifecycleIx('close_table', host.publicKey, id)], [host]);
+  }
+  // A sweep against a live ER table address must do nothing harmful: on base the address is empty.
+  report.unblockWhenEmpty = await sendBase([unblockIx], [sweeper]).catch(error => String(error).slice(0, 200));
+  mkdirSync(ARTIFACTS, { recursive: true });
+  const text = JSON.stringify(report, (_key, item: unknown) => typeof item === 'bigint' ? item.toString() : item, 2);
+  writeFileSync(resolve(ARTIFACTS, `unblock-${id}.json`), `${text}\n`);
+  console.log(text);
+  process.exit(0);
+}
+
+if (mode === 'prefund') {
+  // Audit question: can anyone block a table address by sending SOL to it on base first?
+  const host = Keypair.generate();
+  const report: Record<string, unknown> = { program: PROGRAM.toBase58(), mode };
+  report.setup = await setup();
+  const fund = async (id: bigint) => sendBase([SystemProgram.transfer({ fromPubkey: admin.publicKey, toPubkey: tableAddress(id), lamports: 1_000_000 })], [admin]);
+  // A: prefund on base, then create on the ER.
+  const a = BigInt(Date.now());
+  report.a = { id: a.toString(), table: tableAddress(a).toBase58(), prefund: await fund(a) };
+  await sleep(3000);
+  const erBefore = await er.getAccountInfo(tableAddress(a), 'confirmed');
+  (report.a as Record<string, unknown>).erBefore = erBefore ? { owner: erBefore.owner.toBase58(), lamports: erBefore.lamports } : null;
+  (report.a as Record<string, unknown>).create = await sendEr([lifecycleIx('create_table', host.publicKey, a)], [host]);
+  (report.a as Record<string, unknown>).after = await readTable(a);
+  // B: create on the ER, then prefund on base; does the ER table survive and keep working?
+  const b = a + 1n;
+  (report as Record<string, unknown>).b = { id: b.toString(), table: tableAddress(b).toBase58(), create: await mustEr('create b', [lifecycleIx('create_table', host.publicKey, b)], [host]) };
+  (report.b as Record<string, unknown>).prefund = await fund(b);
+  await sleep(5000);
+  (report.b as Record<string, unknown>).afterPrefund = await readTable(b);
+  (report.b as Record<string, unknown>).roll = await rollUntilCallback(host, b).catch(error => String(error));
+  (report.b as Record<string, unknown>).close = await sendEr([lifecycleIx('close_table', host.publicKey, b)], [host]);
+  (report.b as Record<string, unknown>).afterClose = await readTable(b);
+  const aState = await readTable(a);
+  if (aState) (report.a as Record<string, unknown>).close = await sendEr([lifecycleIx('close_table', host.publicKey, a)], [host]);
+  mkdirSync(ARTIFACTS, { recursive: true });
+  const text = JSON.stringify(report, (_key, item: unknown) => typeof item === 'bigint' ? item.toString() : item, 2);
+  writeFileSync(resolve(ARTIFACTS, `prefund-${a}.json`), `${text}\n`);
+  console.log(text);
+  process.exit(0);
 }
 
 const host = Keypair.generate(), stranger = Keypair.generate();

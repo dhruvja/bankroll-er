@@ -72,6 +72,25 @@ pub mod bankroll_eph_spike {
         Ok(())
     }
 
+    /// Base layer. Anyone may sweep SOL someone sent to an unused table address (which would stop the
+    /// ER from creating the table there); the caller keeps it.
+    pub fn unblock_table(ctx: Context<UnblockTable>, id: u64) -> Result<()> {
+        let table = &ctx.accounts.table;
+        require_keys_eq!(*table.owner, anchor_lang::system_program::ID, SpikeError::NotHost);
+        require!(table.data_is_empty(), SpikeError::NotHost);
+        let bump = [ctx.bumps.table];
+        let id_bytes = id.to_le_bytes();
+        let seeds: &[&[u8]] = &[TABLE_SEED, &id_bytes, &bump];
+        anchor_lang::system_program::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.system_program.key(),
+                anchor_lang::system_program::Transfer { from: table.to_account_info(), to: ctx.accounts.caller.to_account_info() },
+                &[seeds],
+            ),
+            table.lamports(),
+        )
+    }
+
     pub fn request_roll(ctx: Context<RequestRoll>) -> Result<()> {
         let table = &mut ctx.accounts.table;
         require!(!table.pending, SpikeError::StaleRequest);
@@ -154,6 +173,17 @@ pub struct TableLifecycle<'info> {
     #[account(mut, address = EPHEMERAL_VAULT_ID)]
     pub vault: AccountInfo<'info>,
     pub magic_program: Program<'info, MagicProgram>,
+}
+
+#[derive(Accounts)]
+#[instruction(id: u64)]
+pub struct UnblockTable<'info> {
+    #[account(mut)]
+    pub caller: Signer<'info>,
+    /// CHECK: The table PDA while it is a plain system account on base.
+    #[account(mut, seeds = [TABLE_SEED, &id.to_le_bytes()], bump)]
+    pub table: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 #[vrf]
