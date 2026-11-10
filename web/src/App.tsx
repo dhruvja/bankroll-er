@@ -164,7 +164,7 @@ function Hosting({ view }: { view: TableView }) {
 }
 
 /** The home page's one form: your name, then a game against this browser's bot (demo only) or a
- * table to share with friends. Board, starting money and entry sit under More options. */
+ * table to share with friends, on the board you pick. Starting money and entry sit under More options. */
 function PlayPanel({ demo, info, refresh, openWallet }: { demo: boolean; info?: WalletInfo; refresh: () => void; openWallet: () => void }) {
   const { busy, error, run } = useBusy(), [hosting, setHosting] = useState<TableView>(), [pending, setPending] = useState<'bot' | 'friends'>();
   const [name, setName] = useState(savedName), [players, setPlayers] = useState(2), [theme, setTheme] = useState(0);
@@ -190,6 +190,7 @@ function PlayPanel({ demo, info, refresh, openWallet }: { demo: boolean; info?: 
   return (
     <section className="panel play" data-testid="home-play">
       <label>Your name<input data-testid="play-name" maxLength={16} placeholder="Player" value={name} onChange={event => setName(event.target.value)} autoComplete="nickname" /></label>
+      <ThemePicker theme={theme} onChange={setTheme} />
       {demo && <button className="btn primary big" data-testid="play-bot" disabled={busy} onClick={() => open(true)}>{pending === 'bot' ? 'Setting up your game…' : 'Play against a bot'}</button>}
       <div className="friends">
         <div className="segmented" role="radiogroup" aria-label="Players">{[2, 3, 4].map(count => (
@@ -200,7 +201,6 @@ function PlayPanel({ demo, info, refresh, openWallet }: { demo: boolean; info?: 
       </div>
       <details className="more-options">
         <summary>More options</summary>
-        <ThemePicker theme={theme} onChange={setTheme} />
         {!demo && <fieldset><legend>Entry</legend><div className="segmented">{PAID_ENTRIES.map(value => (
           <label key={value} className={paidEntry === value ? 'on' : ''}><input type="radio" name="entry" data-testid={`open-entry-${value}`} checked={paidEntry === value} onChange={() => setPaidEntry(value)} />{usdc(value)} USDC</label>))}</div></fieldset>}
         <fieldset><legend>Starting money</legend><div className="segmented">{board.rules.startCashOptions.map(value => (
