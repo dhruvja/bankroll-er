@@ -1,5 +1,5 @@
-//! Pure Bankroll rules on the Table account. No accounts, CPIs or clock reads: every input,
-//! including VRF output and `now`, is a parameter so unit tests can inject them.
+//! Pure Bankroll rules on the table and house accounts. No accounts, CPIs or clock reads: every
+//! input, including VRF output and `now`, is a parameter so unit tests can inject them.
 use anchor_lang::prelude::*;
 
 use crate::board::*;
@@ -30,7 +30,72 @@ fn word(bytes: &[u8]) -> u64 {
     u64::from_le_bytes(word)
 }
 
-impl Table {
+impl House {
+    /// Reserves the nonce range of a newly created table: both of its nonces start here. Each
+    /// incarnation gets its own 2^32 range, so a callback or invite from a closed table at the same
+    /// address can never match the new one.
+    pub fn next_table_nonce(&mut self) -> Result<u64> {
+        let nonce = self
+            .tables_created
+            .checked_mul(1 << 32)
+            .ok_or(GameError::Overflow)?;
+        self.tables_created = self
+            .tables_created
+            .checked_add(1)
+            .ok_or(GameError::Overflow)?;
+        Ok(nonce)
+    }
+}
+
+impl EphemeralTable {
+    /// A table just created at `host`'s address. It is Free until `open` runs in the same
+    /// instruction.
+    pub fn new(host: Pubkey, bump: u8, nonce: u64) -> Self {
+        EphemeralTable {
+            bump,
+            host,
+            game_nonce: nonce,
+            vrf_nonce: nonce,
+            ..EphemeralTable::default()
+        }
+    }
+
+    /// Records `amount` paid into the shared vault for this table.
+    pub fn credit(&mut self, house: &mut House, amount: u64) -> Result<()> {
+        let held = self.held.checked_add(amount).ok_or(GameError::Overflow)?;
+        let liability = house
+            .liability
+            .checked_add(amount)
+            .ok_or(GameError::Overflow)?;
+        (self.held, house.liability) = (held, liability);
+        Ok(())
+    }
+
+    /// Records `amount` paid out of the shared vault for this table. A table can never pay more
+    /// than it holds, so one table's bookkeeping cannot reach another table's money.
+    pub fn debit(&mut self, house: &mut House, amount: u64) -> Result<()> {
+        let held = self.held.checked_sub(amount).ok_or(GameError::HeldExceeded)?;
+        let liability = house
+            .liability
+            .checked_sub(amount)
+            .ok_or(GameError::Overflow)?;
+        (self.held, house.liability) = (held, liability);
+        Ok(())
+    }
+
+    /// Anyone may close a Free table that holds nothing once `CLOSE_GRACE_SECONDS` have passed
+    /// since it became Free, so every seat had time to read the results.
+    pub fn require_closable(&self, now: i64) -> Result<()> {
+        require!(self.phase == TablePhase::Free, GameError::InvalidPhase);
+        require!(self.held == 0, GameError::CustodyNotEmpty);
+        let open_until = self
+            .freed_at
+            .checked_add(CLOSE_GRACE_SECONDS)
+            .ok_or(GameError::Overflow)?;
+        require!(now >= open_until, GameError::TooEarly);
+        Ok(())
+    }
+
     pub fn count(&self) -> usize {
         self.player_count as usize
     }
@@ -98,8 +163,8 @@ impl Table {
         }
     }
 
-    /// A Free table becomes this host's lobby. Everything from the previous game is cleared;
-    /// only the table identity and the two monotonic nonces survive.
+    /// A Free table that holds nothing becomes this host's lobby. Everything from the previous
+    /// game is cleared; only the bump and the two monotonic nonces survive.
     #[allow(clippy::too_many_arguments)] // Mirrors the open_table instruction args one to one.
     pub fn open(
         &mut self,
@@ -113,6 +178,7 @@ impl Table {
         now: i64,
     ) -> Result<()> {
         require!(self.phase == TablePhase::Free, GameError::InvalidPhase);
+        require!(self.held == 0, GameError::CustodyNotEmpty);
         require!(ENTRIES.contains(&entry), GameError::InvalidEntry);
         require!(
             (2..=MAX_SEATS as u8).contains(&max_players)
@@ -121,8 +187,7 @@ impl Table {
                 && theme < BOARD_THEMES,
             GameError::InvalidConfig
         );
-        *self = Table {
-            index: self.index,
+        *self = EphemeralTable {
             bump: self.bump,
             game_nonce: self
                 .game_nonce
@@ -139,7 +204,7 @@ impl Table {
             player_count: 1,
             lobby_deadline: now.checked_add(LOBBY_SECONDS).ok_or(GameError::Overflow)?,
             last_action_at: now,
-            ..Table::default()
+            ..EphemeralTable::default()
         };
         self.seats[0].wallet = host;
         self.seats[0].name = name;
@@ -201,10 +266,10 @@ impl Table {
     }
 
     /// Marks one seat refunded and returns its wallet and amount; the last refund frees the table
-    /// (and `refund_player` then sweeps what custody still holds, the fee of a finished game, to
+    /// (and `refund_player` then sends what the table still holds, the fee of a finished game, to
     /// the treasury). A game that never finished returns the full entry. A finished game returns
     /// the ranked payout recorded by `settle` or the emergency, so blocking settle gains nothing.
-    pub fn refund(&mut self, index: usize) -> Result<(Pubkey, u64)> {
+    pub fn refund(&mut self, index: usize, now: i64) -> Result<(Pubkey, u64)> {
         require!(self.phase == TablePhase::Refunding, GameError::InvalidPhase);
         require!(index < self.count(), GameError::InvalidAccount);
         let finished = self.ended_at != 0;
@@ -215,6 +280,7 @@ impl Table {
         let refund = (seat.wallet, if finished { seat.payout } else { entry });
         if self.seats[..self.count()].iter().all(|seat| seat.refunded) {
             self.phase = TablePhase::Free;
+            self.freed_at = now;
         }
         Ok(refund)
     }
@@ -758,15 +824,23 @@ impl Table {
         Ok(payouts)
     }
 
-    /// Records what `settle` paid. A seat in `unpaid` had a share but no live token accounts, so
-    /// its share stayed in custody: the table then waits in Refunding until that seat pulls it
-    /// with `refund_player`, or the grace period passes and it goes to the treasury.
+    /// Records what `settle` paid once the paid shares and the fee have left the table. A seat in
+    /// `unpaid` had a share but no live token accounts, so its share is still held: the table then
+    /// waits in Refunding until that seat pulls it with `refund_player`, or the grace period
+    /// passes and it goes to the treasury. The table must hold exactly those unpaid shares.
     pub fn record_settlement(
         &mut self,
         payouts: [u64; MAX_SEATS],
         unpaid: [bool; MAX_SEATS],
         now: i64,
-    ) {
+    ) -> Result<()> {
+        let mut owed = 0u64;
+        for (payout, unpaid) in payouts.iter().zip(unpaid) {
+            if unpaid {
+                owed = owed.checked_add(*payout).ok_or(GameError::Overflow)?;
+            }
+        }
+        require!(self.held == owed, GameError::CustodyNotEmpty);
         for ((seat, payout), unpaid) in self.seats.iter_mut().zip(payouts).zip(unpaid) {
             seat.payout = payout;
             seat.refunded = !unpaid;
@@ -775,7 +849,9 @@ impl Table {
             self.begin_refunds(now);
         } else {
             self.phase = TablePhase::Free;
+            self.freed_at = now;
         }
+        Ok(())
     }
 
     fn begin_turn(&mut self, now: i64) {

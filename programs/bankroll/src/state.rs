@@ -22,12 +22,15 @@ pub const OTHER_SEAT_RETRY_SECONDS: i64 = 3 * crate::board::VRF_RETRY_SECONDS;
 pub const SHARES_BPS: [[u64; 3]; 3] = [[9700, 0, 0], [6700, 3000, 0], [6000, 2700, 1000]];
 /// 0.001 USDC is the free-play entry: one sponsored 0.50 deposit then covers about 500 games.
 pub const ENTRIES: [u64; 3] = [1_000, 1_000_000, 5_000_000];
-/// Zero bytes allocated after the serialized Table. Later phases append fields here without
-/// changing the account size; old accounts read the new fields as zero.
-/// 1023 since `theme` took one byte and 1015 since `start_cash` took eight, so TABLE_SPACE (and
-/// every live account) stays the same size.
-pub const TABLE_RESERVED: usize = 1015;
-pub const TABLE_SPACE: usize = 8 + Table::INIT_SPACE + TABLE_RESERVED;
+/// How long a Free table stays readable after its game ended or its last refund, so every seat
+/// can still see the results, before anyone may close it and return its rent to the house.
+pub const CLOSE_GRACE_SECONDS: i64 = 600;
+/// Zero bytes allocated after the serialized EphemeralTable, for fields added later. Ephemeral
+/// rent is per byte, so the reserve is small; a later layout change can also resize the account.
+pub const TABLE_RESERVED: usize = 64;
+pub const TABLE_SPACE: usize = 8 + EphemeralTable::INIT_SPACE + TABLE_RESERVED;
+pub const HOUSE_RESERVED: usize = 64;
+pub const HOUSE_SPACE: usize = 8 + House::INIT_SPACE + HOUSE_RESERVED;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum SpaceKind {
@@ -68,18 +71,34 @@ pub struct LuckyCard {
     pub amount: i64,
 }
 
+/// The delegated house PDA: rent sponsor of every table, authority of the shared USDC vault, and
+/// the durable total of what the live tables hold.
 #[account]
 #[derive(InitSpace, Default, Debug, PartialEq)]
-pub struct Table {
-    pub index: u16,
+pub struct House {
     pub bump: u8,
-    /// Offset 11 (after the 8-byte discriminator); the free-table finder filters on it.
+    /// Sum of every live table's `held`. The vault always holds at least this much.
+    pub liability: u64,
+    /// Tables ever created. A new table's nonces start at `tables_created << 32`, so no two
+    /// incarnations of one host's table share an invite or VRF nonce.
+    pub tables_created: u64,
+}
+
+/// One host's table: an ER-only Ephemeral Account at `[TABLE_SEED, host]`, created by the first
+/// `open_table` and reused in place for that host's later games until it is closed.
+#[account]
+#[derive(InitSpace, Default, Debug, PartialEq)]
+pub struct EphemeralTable {
+    pub bump: u8,
+    /// Offset 9, after the 8-byte discriminator and the bump.
     pub phase: TablePhase,
     /// Increments on every `open_table`; invites and `join_table` bind to it.
     pub game_nonce: u64,
     /// Monotonic across games so a late callback can never match a later request.
     pub vrf_nonce: u64,
     pub host: Pubkey,
+    /// What this table holds in the shared vault: the entries paid in, less everything paid out.
+    pub held: u64,
     pub entry: u64,
     pub max_players: u8,
     pub target: u64,
@@ -104,6 +123,8 @@ pub struct Table {
     /// Highest `eliminated_at` used so far; seats eliminated by one instruction share a value.
     pub elimination_seq: u8,
     pub ended_at: i64,
+    /// When the table last became Free (settled or refunded); `close_table` waits a grace after it.
+    pub freed_at: i64,
     pub seats: [Seat; MAX_SEATS],
     pub board: [Lot; SPACES],
     pub trade: Trade,
@@ -221,9 +242,9 @@ pub enum GameError {
     UnexpectedRandomness,
     #[msg("Not enough cash")]
     InsufficientCash,
-    #[msg("Table custody does not hold the pot")]
+    #[msg("The table does not hold exactly its pot")]
     CustodyShort,
-    #[msg("Table custody must be empty after settlement")]
+    #[msg("The table holds money it does not owe")]
     CustodyNotEmpty,
     #[msg("You do not own this property")]
     NotYourProperty,
@@ -245,4 +266,8 @@ pub enum GameError {
         "The seat's token accounts are gone; its share goes to the treasury after the refund grace"
     )]
     RecipientMissing,
+    #[msg("A table cannot pay out more than it holds")]
+    HeldExceeded,
+    #[msg("The house cannot sponsor another table")]
+    HouseOutOfRent,
 }

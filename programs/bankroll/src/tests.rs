@@ -19,18 +19,46 @@ fn wallets() -> [Pubkey; MAX_SEATS] {
     [0u8, 1, 2, 3].map(|i| Pubkey::new_from_array([i + 1; 32]))
 }
 
-fn lobby(players: usize, target: u64) -> Table {
+/// A lobby whose entries were paid into the vault, as `open_table` and `join_table` record them.
+fn lobby(players: usize, target: u64) -> EphemeralTable {
     let w = wallets();
-    let mut table = Table { index: 3, bump: 250, ..Table::default() };
+    let mut house = House::default();
+    let mut table = EphemeralTable::new(w[0], 250, 0);
     table.open(w[0], name("host"), USDC, MAX_SEATS as u8, target, 0, 1500, T0).unwrap();
+    table.credit(&mut house, USDC).unwrap();
     for (i, wallet) in w.iter().enumerate().take(players).skip(1) {
         table.join(*wallet, name(&format!("p{i}")), table.game_nonce, T0).unwrap();
+        table.credit(&mut house, USDC).unwrap();
     }
     table
 }
 
+/// The house as it stands when `table` is the only live table.
+fn house_of(table: &EphemeralTable) -> House {
+    House { liability: table.held, ..House::default() }
+}
+
+/// What `settle` does to the bookkeeping: each paid share and then the fee are debited, unpaid
+/// shares stay held, then the settlement is recorded.
+fn settle(table: &mut EphemeralTable, house: &mut House, unpaid: [bool; MAX_SEATS], now: i64) -> Result<[u64; MAX_SEATS]> {
+    let payouts = table.payouts()?;
+    require!(table.held == table.pot()?, GameError::CustodyShort);
+    let mut owed = 0;
+    for seat in 0..MAX_SEATS {
+        if unpaid[seat] {
+            owed += payouts[seat];
+        } else if payouts[seat] > 0 {
+            table.debit(house, payouts[seat])?;
+        }
+    }
+    let fee = table.held - owed;
+    table.debit(house, fee)?;
+    table.record_settlement(payouts, unpaid, now)?;
+    Ok(payouts)
+}
+
 /// A started game with turn order forced to seat order and seat 0 to act.
-fn playing(players: usize, target: u64) -> Table {
+fn playing(players: usize, target: u64) -> EphemeralTable {
     let mut table = lobby(players, target);
     table.start(wallets()[0], T0).unwrap();
     table.consume_randomness([9; 32], table.vrf_nonce, T0).unwrap();
@@ -39,7 +67,7 @@ fn playing(players: usize, target: u64) -> Table {
     table
 }
 
-fn roll(table: &mut Table, value: u8, now: i64) {
+fn roll(table: &mut EphemeralTable, value: u8, now: i64) {
     let seat = table.current_seat();
     table.roll(table.seats[seat].wallet, now).unwrap();
     table.consume_randomness(die(value), table.vrf_nonce, now).unwrap();
@@ -48,7 +76,7 @@ fn roll(table: &mut Table, value: u8, now: i64) {
 #[test]
 fn lobby_validates_config_nonce_capacity_and_refunds_free_the_table() {
     let w = wallets();
-    let mut free = Table::default();
+    let mut free = EphemeralTable::default();
     assert!(free.open(w[0], name("h"), 2 * USDC, 3, 2500, 0, 1500, T0).is_err());
     assert!(free.open(w[0], name("h"), USDC, 5, 2500, 0, 1500, T0).is_err());
     assert!(free.open(w[0], name("h"), USDC, 1, 2500, 0, 1500, T0).is_err());
@@ -74,12 +102,12 @@ fn lobby_validates_config_nonce_capacity_and_refunds_free_the_table() {
     free.cancel_or_expire(w[1], T0 + LOBBY_SECONDS).unwrap();
     assert_eq!(free.phase, TablePhase::Refunding);
     assert_eq!(free.stage_deadline, T0 + LOBBY_SECONDS + REFUND_GRACE_SECONDS, "the refund grace starts");
-    assert_eq!(free.refund(1).unwrap(), (w[1], free.entry), "an unfinished game refunds the entry");
-    assert!(free.refund(1).is_err());
-    assert!(free.refund(2).is_err());
-    assert_eq!(free.phase, TablePhase::Refunding);
-    assert_eq!(free.refund(0).unwrap(), (w[0], free.entry));
-    assert_eq!(free.phase, TablePhase::Free);
+    assert_eq!(free.refund(1, T0 + 700).unwrap(), (w[1], free.entry), "an unfinished game refunds the entry");
+    assert!(free.refund(1, T0 + 700).is_err());
+    assert!(free.refund(2, T0 + 700).is_err());
+    assert_eq!((free.phase, free.freed_at), (TablePhase::Refunding, 0));
+    assert_eq!(free.refund(0, T0 + 800).unwrap(), (w[0], free.entry));
+    assert_eq!((free.phase, free.freed_at), (TablePhase::Free, T0 + 800), "the last refund frees the table");
 
     let mut expired = lobby(2, 2500);
     assert!(expired.join(w[2], name("late"), 1, T0 + LOBBY_SECONDS).is_err());
@@ -113,7 +141,7 @@ fn turn_order_is_a_permutation_with_the_seat_bonus_for_each_target() {
 fn start_cash_sets_every_seat_and_moves_the_target() {
     let w = wallets();
     for (start, target, step) in [(1000, 2000, 40), (1000, 6500, 100), (2000, 3000, 40), (2000, 5500, 75), (2000, 7500, 100)] {
-        let mut table = Table::default();
+        let mut table = EphemeralTable::default();
         table.open(w[0], name("host"), USDC, MAX_SEATS as u8, target, 0, start, T0).unwrap();
         assert_eq!((table.start_cash, table.target), (start, target));
         for (i, wallet) in w.iter().enumerate().skip(1) {
@@ -331,19 +359,27 @@ fn idle_deadline_ends_by_ranking_before_stage_timeouts_then_emergency_refund() {
         table.stage_deadline,
         idle + EMERGENCY_SECONDS + REFUND_GRACE_SECONDS
     );
+    let mut house = house_of(&table);
+    let now = idle + EMERGENCY_SECONDS + 1;
     for seat in 0..3 {
         if ranked[seat] == 0 {
             assert!(
                 table.seats[seat].refunded,
                 "a seat with nothing to receive is done at the switch"
             );
-            assert!(table.refund(seat).is_err());
+            assert!(table.refund(seat, now).is_err());
             continue;
         }
-        let (wallet, amount) = table.refund(seat).unwrap();
+        let (wallet, amount) = table.refund(seat, now).unwrap();
         assert_eq!((wallet, amount), (wallets()[seat], ranked[seat]), "a finished game refunds its ranked payout");
+        table.debit(&mut house, amount).unwrap();
     }
     assert_eq!(table.phase, TablePhase::Free);
+    // The last refund sends what the table still holds, the fee and dust, to the treasury.
+    assert_eq!(table.held, 3 * USDC - 2_010_000 - 900_000);
+    let rest = table.held;
+    table.debit(&mut house, rest).unwrap();
+    assert_eq!((table.held, house.liability), (0, 0));
 
     // A table nobody touched until long after the idle deadline still ends by ranking.
     let mut stuck = playing(2, 2500);
@@ -509,19 +545,22 @@ fn settlement_with_an_unpaid_seat_waits_in_refunding_for_that_seat_only() {
     let second = (0..3).find(|&seat| payouts[seat] == 900_000).unwrap();
     let mut unpaid = [false; MAX_SEATS];
     unpaid[second] = true;
-    table.record_settlement(payouts, unpaid, T0 + 50);
+    let mut house = house_of(&table);
+    settle(&mut table, &mut house, unpaid, T0 + 50).unwrap();
     assert_eq!(
         (table.phase, table.stage_deadline),
         (TablePhase::Refunding, T0 + 50 + REFUND_GRACE_SECONDS)
     );
+    assert_eq!((table.held, house.liability), (900_000, 900_000), "only the unpaid share stays held");
     for seat in (0..3).filter(|&seat| seat != second) {
         assert!(
-            table.seats[seat].refunded && table.refund(seat).is_err(),
+            table.seats[seat].refunded && table.refund(seat, T0 + 60).is_err(),
             "paid or nothing owed"
         );
     }
-    assert_eq!(table.refund(second).unwrap(), (wallets()[second], 900_000));
-    assert_eq!(table.phase, TablePhase::Free);
+    assert_eq!(table.refund(second, T0 + 60).unwrap(), (wallets()[second], 900_000));
+    table.debit(&mut house, 900_000).unwrap();
+    assert_eq!((table.phase, table.freed_at, table.held, house.liability), (TablePhase::Free, T0 + 60, 0, 0));
 }
 
 #[test]
@@ -531,14 +570,13 @@ fn open_resets_every_game_field_but_keeps_identity_and_nonces() {
     table.buy(wallets()[0], T0 + 2).unwrap();
     table.seats[3].strikes = 2;
     table.force_timeout(table.last_action_at + IDLE_SECONDS).unwrap();
-    let payouts = table.payouts().unwrap();
-    table.record_settlement(payouts, [false; MAX_SEATS], T0 + 9_000);
-    assert_eq!(table.phase, TablePhase::Free);
+    let mut house = house_of(&table);
+    settle(&mut table, &mut house, [false; MAX_SEATS], T0 + 9_000).unwrap();
+    assert_eq!((table.phase, table.freed_at, table.held), (TablePhase::Free, T0 + 9_000, 0));
     let (game_nonce, vrf_nonce) = (table.game_nonce, table.vrf_nonce);
-    let host = Pubkey::new_unique();
+    let host = wallets()[0];
     table.open(host, name("next"), 5 * USDC, 2, 2500, 0, 1500, T0 + 9_000).unwrap();
-    let mut fresh = Table {
-        index: 3,
+    let mut fresh = EphemeralTable {
         bump: 250,
         game_nonce: game_nonce + 1,
         vrf_nonce,
@@ -551,14 +589,14 @@ fn open_resets_every_game_field_but_keeps_identity_and_nonces() {
         player_count: 1,
         lobby_deadline: T0 + 9_000 + LOBBY_SECONDS,
         last_action_at: T0 + 9_000,
-        ..Table::default()
+        ..EphemeralTable::default()
     };
     fresh.seats[0].wallet = host;
     fresh.seats[0].name = name("next");
     assert_eq!(table, fresh);
 }
 
-fn finished(nets: &[i64], eliminated: &[u8]) -> Table {
+fn finished(nets: &[i64], eliminated: &[u8]) -> EphemeralTable {
     let mut table = playing(nets.len(), 7000);
     for (seat, (&net, &out)) in nets.iter().zip(eliminated).enumerate() {
         table.seats[seat].cash = net;
@@ -612,7 +650,7 @@ fn ranked_payouts_cover_every_order_and_tie_for_two_three_and_four_seats() {
 #[test]
 fn a_tenth_of_a_cent_entry_opens_and_pays_out_without_losing_the_fee() {
     let w = wallets();
-    let mut free = Table::default();
+    let mut free = EphemeralTable::default();
     free.open(w[0], name("h"), ENTRIES[0], 2, 2500, 0, 1500, T0).unwrap();
     assert_eq!(free.entry, 1_000);
     for (nets, eliminated, expected) in [
@@ -629,8 +667,8 @@ fn a_tenth_of_a_cent_entry_opens_and_pays_out_without_losing_the_fee() {
     }
 }
 
-/// Size of the table_v2 accounts (the 28-space board; table_v1 held 24 spaces in 1495 bytes).
-const LIVE_TABLE_SPACE: usize = 1503;
+/// Size of an ephemeral table (table_v2 base accounts were 1,503 bytes).
+const EPHEMERAL_TABLE_SPACE: usize = 566;
 
 #[test]
 fn board_constants_match_the_frozen_economy() {
@@ -638,9 +676,149 @@ fn board_constants_match_the_frozen_economy() {
     assert_eq!(BOARD[27].price, 400);
     assert_eq!([BOARD[0].kind, BOARD[7].kind, BOARD[14].kind, BOARD[21].kind], [SpaceKind::Start, SpaceKind::Jail, SpaceKind::Auction, SpaceKind::Lucky], "the four corners");
     assert_eq!(SHARES_BPS.iter().map(|row| row.iter().sum::<u64>() + FEE_BPS).collect::<Vec<_>>(), [10_000; 3]);
-    assert!(TABLE_SPACE < 10_240);
-    // Live table_v2 accounts are created at this size; new fields must come out of TABLE_RESERVED.
-    assert_eq!(TABLE_SPACE, LIVE_TABLE_SPACE);
+    // Every table is created at this size; new fields come out of TABLE_RESERVED.
+    assert_eq!(TABLE_SPACE, EPHEMERAL_TABLE_SPACE);
+    assert_eq!(EphemeralTable::INIT_SPACE + 8 + TABLE_RESERVED, EPHEMERAL_TABLE_SPACE);
+    // The house sponsors (size + 60) x 32 lamports per open table and gets it back on close.
+    assert_eq!(ephemeral_rollups_sdk::ephemeral_accounts::rent(TABLE_SPACE as u32), 20_032);
+    assert_eq!(HOUSE_SPACE, 8 + 17 + HOUSE_RESERVED);
+}
+
+// ---- Ephemeral tables: shared vault bookkeeping and lifecycle ----
+
+/// Two tables share one house. Every entry in is credited and every payout debited against the
+/// acting table, `liability` always equals the sum of `held`, and both end at zero.
+#[test]
+fn held_and_liability_track_entries_refunds_and_settlement_across_tables() {
+    let w = wallets();
+    let mut house = House::default();
+    let mut a = EphemeralTable::new(w[0], 1, house.next_table_nonce().unwrap());
+    let mut b = EphemeralTable::new(w[2], 2, house.next_table_nonce().unwrap());
+    a.open(w[0], name("a"), USDC, 3, 2500, 0, 1500, T0).unwrap();
+    a.credit(&mut house, USDC).unwrap();
+    b.open(w[2], name("b"), 5 * USDC, 2, 2500, 0, 1500, T0).unwrap();
+    b.credit(&mut house, 5 * USDC).unwrap();
+    for wallet in [w[1], w[3]] {
+        a.join(wallet, name("g"), a.game_nonce, T0).unwrap();
+        a.credit(&mut house, USDC).unwrap();
+    }
+    b.join(w[0], name("g"), b.game_nonce, T0).unwrap();
+    b.credit(&mut house, 5 * USDC).unwrap();
+    assert_eq!((a.held, b.held, house.liability), (3 * USDC, 10 * USDC, 13 * USDC));
+
+    // A table never pays out more than it holds, even when the house as a whole could.
+    let (before_a, before_house) = (a.clone(), house.clone());
+    assert_eq!(a.debit(&mut house, 3 * USDC + 1).unwrap_err(), error!(GameError::HeldExceeded));
+    assert_eq!((&a, &house), (&before_a, &before_house), "a rejected debit changes nothing");
+
+    // Table A's lobby is cancelled and refunded; table B plays and settles.
+    a.cancel_or_expire(w[0], T0 + 1).unwrap();
+    for seat in 0..3 {
+        let (_, amount) = a.refund(seat, T0 + 2).unwrap();
+        a.debit(&mut house, amount).unwrap();
+        assert_eq!(house.liability, a.held + b.held);
+    }
+    assert_eq!((a.phase, a.held), (TablePhase::Free, 0));
+    b.start(w[2], T0).unwrap();
+    b.consume_randomness([1; 32], b.vrf_nonce, T0).unwrap();
+    b.seats[0].cash += 5_000;
+    b.force_timeout(b.last_action_at + IDLE_SECONDS).unwrap();
+    let payouts = settle(&mut b, &mut house, [false; MAX_SEATS], T0 + 4_000).unwrap();
+    assert_eq!(payouts.iter().sum::<u64>(), 9_700_000);
+    assert_eq!((b.phase, b.held, house.liability), (TablePhase::Free, 0, 0));
+}
+
+/// Settlement must leave exactly the unpaid shares held, and only a table holding its whole pot
+/// can settle.
+#[test]
+fn settlement_requires_the_whole_pot_and_leaves_only_unpaid_shares() {
+    let mut table = playing(2, 2500);
+    table.force_timeout(table.last_action_at + IDLE_SECONDS).unwrap();
+    let payouts = table.payouts().unwrap();
+    let before = table.clone();
+    assert!(table.record_settlement(payouts, [false; MAX_SEATS], T0).is_err(), "nothing was paid out yet");
+    assert_eq!(table, before);
+    let mut short = table.clone();
+    let mut house = house_of(&short);
+    short.debit(&mut house, 1).unwrap();
+    assert_eq!(settle(&mut short, &mut house, [false; MAX_SEATS], T0).unwrap_err(), error!(GameError::CustodyShort));
+}
+
+/// The host's table re-opens in place only once it is Free and holds nothing.
+#[test]
+fn open_re_opens_only_a_free_table_that_holds_nothing() {
+    let w = wallets();
+    let reopen = |table: &mut EphemeralTable| table.open(w[0], name("h"), USDC, 2, 2500, 0, 1500, T0 + 5);
+    let mut lobby_table = lobby(2, 2500);
+    assert!(reopen(&mut lobby_table).is_err(), "Lobby");
+    let mut table = playing(2, 2500);
+    assert!(reopen(&mut table).is_err(), "Playing");
+    table.force_timeout(table.last_action_at + IDLE_SECONDS).unwrap();
+    assert!(reopen(&mut table).is_err(), "Finished");
+    table.force_timeout(table.last_action_at + IDLE_SECONDS + EMERGENCY_SECONDS).unwrap();
+    assert!(reopen(&mut table).is_err(), "Refunding");
+    let mut stray = EphemeralTable { held: 1, ..EphemeralTable::new(w[0], 1, 0) };
+    let before = stray.clone();
+    assert_eq!(reopen(&mut stray).unwrap_err(), error!(GameError::CustodyNotEmpty), "Free but still holding money");
+    assert_eq!(stray, before);
+    let mut free = EphemeralTable::new(w[0], 1, 7 << 32);
+    reopen(&mut free).unwrap();
+    assert_eq!((free.phase, free.game_nonce, free.vrf_nonce), (TablePhase::Lobby, (7 << 32) + 1, 7 << 32));
+}
+
+/// Anyone may close a table only once it is Free, holds nothing, and the grace has passed.
+#[test]
+fn close_needs_a_free_empty_table_after_the_grace() {
+    let mut table = lobby(2, 2500);
+    assert_eq!(table.require_closable(T0 + 100_000).unwrap_err(), error!(GameError::InvalidPhase));
+    let mut house = house_of(&table);
+    table.cancel_or_expire(wallets()[0], T0 + 10).unwrap();
+    for seat in 0..2 {
+        let (_, amount) = table.refund(seat, T0 + 20 + seat as i64).unwrap();
+        table.debit(&mut house, amount).unwrap();
+    }
+    assert_eq!(table.freed_at, T0 + 21, "the grace runs from the last refund");
+    assert_eq!(table.require_closable(T0 + 21 + CLOSE_GRACE_SECONDS - 1).unwrap_err(), error!(GameError::TooEarly));
+    table.require_closable(T0 + 21 + CLOSE_GRACE_SECONDS).unwrap();
+    table.held = 1;
+    assert_eq!(table.require_closable(T0 + 21 + CLOSE_GRACE_SECONDS).unwrap_err(), error!(GameError::CustodyNotEmpty));
+
+    // After a settled game the grace runs from the settlement.
+    let mut settled = playing(2, 2500);
+    settled.force_timeout(settled.last_action_at + IDLE_SECONDS).unwrap();
+    let mut house = house_of(&settled);
+    settle(&mut settled, &mut house, [false; MAX_SEATS], T0 + 5_000).unwrap();
+    assert!(settled.require_closable(T0 + 5_000 + CLOSE_GRACE_SECONDS - 1).is_err());
+    settled.require_closable(T0 + 5_000 + CLOSE_GRACE_SECONDS).unwrap();
+}
+
+/// Each created table starts both nonces at `tables_created << 32`, so a callback or invite from
+/// an earlier incarnation at the same address can never match the new one.
+#[test]
+fn created_tables_get_disjoint_nonce_ranges_and_stale_callbacks_or_invites_fail() {
+    let w = wallets();
+    let mut house = House::default();
+    assert_eq!([0, 1, 2].map(|_| house.next_table_nonce().unwrap()), [0, 1 << 32, 2 << 32]);
+    assert_eq!(house.tables_created, 3);
+
+    // Incarnation 0 of the host's table leaves a roll pending and an invite outstanding.
+    let mut old = playing(2, 2500);
+    old.roll(w[0], T0 + 1).unwrap();
+    let (stale_vrf, stale_invite) = (old.vrf_nonce, old.game_nonce);
+    // Incarnation 3 at the same address, after a close and a re-create.
+    let mut new = EphemeralTable::new(w[0], old.bump, house.next_table_nonce().unwrap());
+    new.open(w[0], name("h"), USDC, 3, 2500, 0, 1500, T0 + 2).unwrap();
+    assert_eq!(new.join(w[1], name("g"), stale_invite, T0 + 2).unwrap_err(), error!(GameError::StaleNonce));
+    new.join(w[1], name("g"), new.game_nonce, T0 + 2).unwrap();
+    new.join(w[2], name("g"), new.game_nonce, T0 + 2).unwrap();
+    new.start(w[0], T0 + 3).unwrap();
+    assert!(new.vrf_nonce > stale_vrf && new.vrf_nonce >> 32 == 3);
+    let before = new.clone();
+    assert_eq!(new.consume_randomness([1; 32], stale_vrf, T0 + 4).unwrap_err(), error!(GameError::UnexpectedRandomness));
+    assert_eq!(new, before, "a stale callback changes nothing");
+
+    let mut full = House { tables_created: 1 << 32, ..House::default() };
+    assert!(full.next_table_nonce().is_err(), "the nonce ranges never wrap");
 }
 
 // ---- Phase 03: full rules ----
@@ -659,7 +837,7 @@ fn die_and_card(value: u8, card: u8) -> [u8; 32] {
 }
 
 /// Seat 0 rolls `value` from `from` with every seat's cash set to `cash`, drawing `card`.
-fn draw_from(players: usize, from: u8, value: u8, card: u8, cash: i64) -> Table {
+fn draw_from(players: usize, from: u8, value: u8, card: u8, cash: i64) -> EphemeralTable {
     let mut table = playing(players, 7000);
     for seat in &mut table.seats[..players] {
         seat.cash = cash;
@@ -1033,7 +1211,7 @@ const AUCTION: u8 = 14;
 
 /// Seat 0 rolls `value` from `from` (12 + 2 or 8 + 6 reach the Auction space) after `holdings`
 /// (space, owner) are placed.
-fn auction(players: usize, target: u64, from: u8, value: u8, holdings: &[(usize, u8)]) -> Table {
+fn auction(players: usize, target: u64, from: u8, value: u8, holdings: &[(usize, u8)]) -> EphemeralTable {
     let mut table = playing(players, target);
     for &(space, owner) in holdings {
         table.board[space].owner = owner;
@@ -1265,7 +1443,7 @@ fn eliminated_seats_cannot_offer_and_accept_revalidates_both_properties() {
 fn open_records_the_board_theme() {
     let w = wallets();
     for theme in 0..BOARD_THEMES {
-        let mut table = Table::default();
+        let mut table = EphemeralTable::default();
         table.open(w[0], name("h"), USDC, 2, 2500, theme, 1500, T0).unwrap();
         assert_eq!(table.theme, theme);
     }

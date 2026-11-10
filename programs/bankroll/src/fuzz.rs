@@ -1,8 +1,10 @@
-//! G5: invariant fuzzing of the real engine. 91,000 games replay on one reused `Table` value:
+//! G5: invariant fuzzing of the real engine. 91,000 games replay on one reused `EphemeralTable` value:
 //! 90,000 games of `sim.py`'s greedy bots (5,000 per player count and target, with and without
 //! Auction trades, for the game-length comparison with `sim.py`) and 1,000 chaos games of random,
 //! often illegal, actions with random timeouts, VRF retries, late callbacks, trades and emergency
-//! refunds. A second test measures two colluding trade bots in 4-player games.
+//! refunds. Every entry is credited to the table's `held` and the house `liability` and every
+//! payout debited from them, as the instructions do, so each game must end with both at zero. A
+//! second test measures two colluding trade bots in 4-player games.
 //!
 //! `cargo test --release -p bankroll fuzz_ -- --ignored --nocapture`
 use super::board::*;
@@ -104,7 +106,7 @@ fn assert_conserved(pot: u64, paid: u64, finished: bool, context: &str) {
 }
 
 /// Structural invariants that hold after every successful instruction.
-fn assert_consistent(table: &Table, context: &str) {
+fn assert_consistent(table: &EphemeralTable, context: &str) {
     let n = table.count();
     for (space, lot) in table.board.iter().enumerate() {
         let spec = BOARD[space];
@@ -169,12 +171,11 @@ fn assert_consistent(table: &Table, context: &str) {
 }
 
 /// After `open`, the table equals a freshly created one apart from identity, nonces and config.
-/// "Fresh" is built the way `create_table` builds it, from zeroed account bytes plus an unowned
-/// board, so a wrong `Default` cannot hide a field that `open` forgets to reset.
-fn assert_fresh(table: &Table, index: u16, bump: u8, game_nonce: u64, vrf_nonce: u64, host: Pubkey, host_name: [u8; NAME_LEN]) {
-    let mut fresh = Table::deserialize(&mut &[0u8; Table::INIT_SPACE][..]).unwrap();
+/// "Fresh" is built from zeroed account bytes plus an unowned board, so a wrong `Default` cannot
+/// hide a field that `open` forgets to reset.
+fn assert_fresh(table: &EphemeralTable, bump: u8, game_nonce: u64, vrf_nonce: u64, host: Pubkey, host_name: [u8; NAME_LEN]) {
+    let mut fresh = EphemeralTable::deserialize(&mut &[0u8; EphemeralTable::INIT_SPACE][..]).unwrap();
     fresh.board = [Lot { owner: NO_OWNER, buildings: 0 }; SPACES];
-    fresh.index = index;
     fresh.bump = bump;
     fresh.game_nonce = game_nonce;
     fresh.vrf_nonce = vrf_nonce;
@@ -192,34 +193,57 @@ fn assert_fresh(table: &Table, index: u16, bump: u8, game_nonce: u64, vrf_nonce:
     assert_eq!(*table, fresh, "state survived the reset");
 }
 
-/// Opens the reused table and seats `players`, checking the reset.
-fn seat_players(table: &mut Table, rng: &mut Rng, players: usize, max_players: u8, target: u64, entry: u64, now: i64) -> Vec<Pubkey> {
+/// Opens the reused table and seats `players`, checking the reset and crediting every entry.
+#[allow(clippy::too_many_arguments)] // The game config plus the table, house and rng it runs on.
+fn seat_players(table: &mut EphemeralTable, house: &mut House, rng: &mut Rng, players: usize, max_players: u8, target: u64, entry: u64, now: i64) -> Vec<Pubkey> {
     let wallets: Vec<Pubkey> = (0..players).map(|_| rng.wallet()).collect();
-    let (index, bump, game_nonce, vrf_nonce) = (table.index, table.bump, table.game_nonce, table.vrf_nonce);
+    let (bump, game_nonce, vrf_nonce) = (table.bump, table.game_nonce, table.vrf_nonce);
     let host_name = encode_name("host").unwrap();
+    assert_eq!((table.held, house.liability), (0, 0), "a Free table holds nothing");
     table.open(wallets[0], host_name, entry, max_players, target, 0, START_CASH as u64, now).unwrap();
-    assert_fresh(table, index, bump, game_nonce + 1, vrf_nonce, wallets[0], host_name);
+    assert_fresh(table, bump, game_nonce + 1, vrf_nonce, wallets[0], host_name);
+    table.credit(house, entry).unwrap();
     for wallet in &wallets[1..] {
         table.join(*wallet, encode_name("guest").unwrap(), table.game_nonce, now).unwrap();
+        table.credit(house, entry).unwrap();
     }
     wallets
 }
 
-/// Settles a finished table (or runs the emergency refund) and checks conservation.
-fn close_out(table: &mut Table, rng: &mut Rng, now: &mut i64, emergency: bool, context: &str) {
+/// One payout leaves the vault: debited from the table first, as `pay_from_vault` does. The house
+/// holds only this table, so its liability must track `held` exactly.
+fn pay(table: &mut EphemeralTable, house: &mut House, amount: u64, context: &str) {
+    let over = table.clone().debit(&mut house.clone(), table.held + 1);
+    assert!(over.is_err(), "{context}: a debit above held was accepted");
+    table.debit(house, amount).unwrap();
+    assert_eq!(house.liability, table.held, "{context}: liability drifted from held");
+}
+
+/// Settles a finished table (or runs the emergency refund) and checks conservation, moving the
+/// money through `held` exactly as `settle` and `refund_player` do.
+fn close_out(table: &mut EphemeralTable, house: &mut House, rng: &mut Rng, now: &mut i64, emergency: bool, context: &str) {
     let pot = table.pot().unwrap();
+    assert_eq!((table.held, house.liability), (pot, pot), "{context}: the table holds its whole pot");
     if table.phase == TablePhase::Finished && !emergency {
         let payouts = table.payouts().unwrap();
         assert_conserved(pot, payouts.iter().sum(), true, context);
         // Sometimes a paid seat's token accounts are gone at settle; it then pulls its share later.
         let unpaid = payouts.map(|payout| payout > 0 && rng.chance(5));
-        table.record_settlement(payouts, unpaid, *now);
+        let mut owed = 0;
+        for seat in 0..table.count() {
+            if unpaid[seat] {
+                owed += payouts[seat];
+            } else if payouts[seat] > 0 {
+                pay(table, house, payouts[seat], context);
+            }
+        }
+        let fee = table.held - owed;
+        pay(table, house, fee, context);
+        table.record_settlement(payouts, unpaid, *now).unwrap();
         for seat in (0..table.count()).filter(|&seat| unpaid[seat]) {
-            assert_eq!(
-                table.refund(seat).unwrap().1,
-                payouts[seat],
-                "{context}: deferred share"
-            );
+            let amount = table.refund(seat, *now).unwrap().1;
+            assert_eq!(amount, payouts[seat], "{context}: deferred share");
+            pay(table, house, amount, context);
         }
     } else {
         let finished = table.phase == TablePhase::Finished;
@@ -237,16 +261,22 @@ fn close_out(table: &mut Table, rng: &mut Rng, now: &mut i64, emergency: bool, c
                 );
                 continue;
             }
-            paid += table.refund(seat).unwrap().1;
+            let amount = table.refund(seat, *now).unwrap().1;
+            pay(table, house, amount, context);
+            paid += amount;
         }
         assert_conserved(pot, paid, finished, context);
+        // The refund that frees the table sends the fee and dust it still holds to the treasury.
+        let rest = table.held;
+        pay(table, house, rest, context);
     }
-    assert_eq!(table.phase, TablePhase::Free, "{context}: the table returns to the pool");
+    assert_eq!(table.phase, TablePhase::Free, "{context}: the table is free to re-open");
+    assert_eq!((table.held, house.liability, table.freed_at), (0, 0, *now), "{context}: freed with nothing held");
 }
 
 /// `sim.py`'s greedy bot for one PreRoll: sell out of negative cash, build, then bail or roll.
 /// Returns false once its turn is over (a sale bankrupted it or the game ended).
-fn bot_preroll(table: &mut Table, now: i64) -> bool {
+fn bot_preroll(table: &mut EphemeralTable, now: i64) -> bool {
     let seat = table.current_seat();
     let wallet = table.seats[seat].wallet;
     while table.seats[seat].cash < 0 {
@@ -276,20 +306,20 @@ fn bot_preroll(table: &mut Table, now: i64) -> bool {
     true
 }
 
-fn unbuilt(table: &Table, seat: usize) -> Vec<usize> {
+fn unbuilt(table: &EphemeralTable, seat: usize) -> Vec<usize> {
     (0..SPACES)
         .filter(|&space| table.board[space].owner as usize == seat && table.board[space].buildings == 0)
         .collect()
 }
 
 /// A city of a group `seat` already holds whole.
-fn in_full_group(table: &Table, seat: usize, space: usize) -> bool {
+fn in_full_group(table: &EphemeralTable, seat: usize, space: usize) -> bool {
     BOARD[space].kind == SpaceKind::City && table.owns_group(seat, BOARD[space].group)
 }
 
 /// A property `seat` can swap away without breaking up a group it is building: a public, or a
 /// city whose group holds no other city of `seat`'s.
-fn loose(table: &Table, seat: usize, space: usize) -> bool {
+fn loose(table: &EphemeralTable, seat: usize, space: usize) -> bool {
     BOARD[space].kind == SpaceKind::Public
         || (0..SPACES).all(|other| {
             other == space || BOARD[other].kind != SpaceKind::City || BOARD[other].group != BOARD[space].group || table.board[other].owner as usize != seat
@@ -297,7 +327,7 @@ fn loose(table: &Table, seat: usize, space: usize) -> bool {
 }
 
 /// Whether `seat` would own the whole city group of `gain` after receiving it (`sim.py completes`).
-fn completes(table: &Table, seat: usize, gain: usize) -> bool {
+fn completes(table: &EphemeralTable, seat: usize, gain: usize) -> bool {
     BOARD[gain].kind == SpaceKind::City
         && (0..SPACES)
             .filter(|&space| BOARD[space].kind == SpaceKind::City && BOARD[space].group == BOARD[gain].group)
@@ -305,7 +335,7 @@ fn completes(table: &Table, seat: usize, gain: usize) -> bool {
 }
 
 /// Other seats' unbuilt properties that would complete one of the lander's groups.
-fn wanted(table: &Table, lander: usize) -> Vec<usize> {
+fn wanted(table: &EphemeralTable, lander: usize) -> Vec<usize> {
     (0..SPACES)
         .filter(|&space| {
             let owner = table.board[space].owner;
@@ -346,12 +376,12 @@ impl TradePolicy {
     }
 
     /// The colluding lander's partner, when the partner could take part in a swap.
-    fn trading_partner(self, table: &Table, lander: usize) -> Option<usize> {
+    fn trading_partner(self, table: &EphemeralTable, lander: usize) -> Option<usize> {
         self.partner(lander).filter(|&partner| table.is_active(partner) && !unbuilt(table, partner).is_empty())
     }
 
     /// What the lander offers at TradeOpen, or None to pass.
-    fn give(self, table: &Table, lander: usize) -> Option<usize> {
+    fn give(self, table: &EphemeralTable, lander: usize) -> Option<usize> {
         if self == TradePolicy::Never {
             return None;
         }
@@ -367,7 +397,7 @@ impl TradePolicy {
     }
 
     /// What `seat` offers back for the lander's `give`, or None.
-    fn offer(self, table: &Table, seat: usize, lander: usize, give: usize) -> Option<usize> {
+    fn offer(self, table: &EphemeralTable, seat: usize, lander: usize, give: usize) -> Option<usize> {
         let theirs = unbuilt(table, seat);
         if self.partner(seat) == Some(lander) {
             return priciest(theirs.iter().copied().filter(|&space| completes(table, lander, space)))
@@ -386,7 +416,7 @@ impl TradePolicy {
     }
 
     /// The offer (seat, space) the lander accepts from `offers` (in turn order), or None.
-    fn choose(self, table: &Table, lander: usize, offers: &[(usize, usize)]) -> Option<(usize, usize)> {
+    fn choose(self, table: &EphemeralTable, lander: usize, offers: &[(usize, usize)]) -> Option<(usize, usize)> {
         let wanted = wanted(table, lander);
         let best = offers.iter().rev().copied().max_by_key(|&(_, space)| (wanted.contains(&space), BOARD[space].price));
         match self.trading_partner(table, lander) {
@@ -399,8 +429,8 @@ impl TradePolicy {
 }
 
 /// One game of bots with no timeouts. Returns the final round, the payouts and the trade count.
-fn bot_game(table: &mut Table, rng: &mut Rng, players: usize, target: u64, now: &mut i64, policy: TradePolicy) -> (u32, [u64; MAX_SEATS], u32) {
-    seat_players(table, rng, players, players as u8, target, 1_000_000, *now);
+fn bot_game(table: &mut EphemeralTable, house: &mut House, rng: &mut Rng, players: usize, target: u64, now: &mut i64, policy: TradePolicy) -> (u32, [u64; MAX_SEATS], u32) {
+    seat_players(table, house, rng, players, players as u8, target, 1_000_000, *now);
     let host = table.host;
     table.start(host, *now).unwrap();
     let mut trades = 0;
@@ -465,13 +495,13 @@ fn bot_game(table: &mut Table, rng: &mut Rng, players: usize, target: u64, now: 
     }
     let round = table.round;
     let payouts = table.payouts().unwrap();
-    close_out(table, rng, now, false, "bot game");
+    close_out(table, house, rng, now, false, "bot game");
     (round, payouts, trades)
 }
 
 /// A completed trade swaps exactly the two properties and pays exactly the two bonuses. A side the
 /// swap left bankrupt is eliminated: its cash is discarded and its properties are unowned.
-fn assert_trade_swapped(before: &Table, after: &Table, lander: usize, seat: usize, give: usize, take: usize, context: &str) {
+fn assert_trade_swapped(before: &EphemeralTable, after: &EphemeralTable, lander: usize, seat: usize, give: usize, take: usize, context: &str) {
     let bankrupt = |side: usize| before.is_active(side) && !after.is_active(side);
     for space in 0..SPACES {
         let expected = match space {
@@ -494,18 +524,18 @@ fn assert_trade_swapped(before: &Table, after: &Table, lander: usize, seat: usiz
 
 /// One chaos game: random callers, random (often illegal) instructions, random clock jumps.
 /// Every rejected instruction must leave the table byte-for-byte unchanged.
-fn chaos_game(table: &mut Table, rng: &mut Rng, game: usize, now: &mut i64, stats: &mut ChaosStats) {
+fn chaos_game(table: &mut EphemeralTable, house: &mut House, rng: &mut Rng, game: usize, now: &mut i64, stats: &mut ChaosStats) {
     let players = 2 + rng.below(3) as usize;
     let max_players = players as u8 + rng.below(MAX_SEATS as u64 + 1 - players as u64) as u8;
     let target = TARGETS[rng.below(3) as usize];
     let entry = ENTRIES[rng.below(3) as usize];
-    let mut wallets = seat_players(table, rng, players, max_players, target, entry, *now);
+    let mut wallets = seat_players(table, house, rng, players, max_players, target, entry, *now);
     wallets.push(rng.wallet()); // A stranger.
     if rng.chance(5) {
         let caller = if rng.chance(50) { wallets[0] } else { wallets[1] };
         *now += if rng.chance(50) { LOBBY_SECONDS } else { 0 };
         if table.cancel_or_expire(caller, *now).is_ok() {
-            close_out(table, rng, now, false, "lobby refund");
+            close_out(table, house, rng, now, false, "lobby refund");
             stats.lobby_refunds += 1;
             return;
         }
@@ -530,7 +560,7 @@ fn chaos_game(table: &mut Table, rng: &mut Rng, game: usize, now: &mut i64, stat
         let actor = if rng.chance(70) { current } else { caller };
         let space = if rng.chance(80) { rng.below(SPACES as u64) as u8 } else { rng.below(256) as u8 };
         // Trade calls usually name one of the caller's own properties so trades actually complete.
-        let own_space = |table: &Table, wallet: Pubkey, rng: &mut Rng| {
+        let own_space = |table: &EphemeralTable, wallet: Pubkey, rng: &mut Rng| {
             let owned: Vec<usize> = table.seat_of(&wallet).map(|seat| unbuilt(table, seat)).unwrap_or_default();
             if owned.is_empty() || rng.chance(20) { space } else { owned[rng.below(owned.len() as u64) as usize] as u8 }
         };
@@ -567,7 +597,7 @@ fn chaos_game(table: &mut Table, rng: &mut Rng, game: usize, now: &mut i64, stat
             85..=96 => table.force_timeout(*now),
             97 => table.start(caller, *now),
             98 => table.join(caller, encode_name("late").unwrap(), table.game_nonce, *now),
-            99 if rng.chance(50) => table.refund(rng.below(MAX_SEATS as u64) as usize).map(|_| ()),
+            99 if rng.chance(50) => table.refund(rng.below(MAX_SEATS as u64) as usize, *now).map(|_| ()),
             99 => table.forfeit(caller, *now),
             100..=105 => {
                 let give = own_space(table, actor, rng);
@@ -614,6 +644,7 @@ fn chaos_game(table: &mut Table, rng: &mut Rng, game: usize, now: &mut i64, stat
                 assert_consistent(table, &context);
             }
         }
+        assert_eq!(table.held, table.pot().unwrap(), "{context}: play moves no money");
     }
     assert!(
         matches!(table.phase, TablePhase::Finished | TablePhase::Refunding),
@@ -634,20 +665,20 @@ fn chaos_game(table: &mut Table, rng: &mut Rng, game: usize, now: &mut i64, stat
     }
     let emergency = table.phase == TablePhase::Finished && rng.chance(10);
     stats.emergency_refunds += emergency as u64;
-    close_out(table, rng, now, emergency, &format!("chaos game {game}"));
+    close_out(table, house, rng, now, emergency, &format!("chaos game {game}"));
 }
 
 /// The bank side of every accepted instruction that eliminates nobody: buy, build, sell and bail
 /// move exactly their price, a trade adds exactly the two bonuses, a roll callback adds salary for
 /// each pass of Start plus the drawn card's bank amount (rent and pay/collect cards only move cash
 /// between seats), and everything else (rolls, passes, offers, timeouts) moves no cash.
-fn assert_player_cash_flow(before: &Table, after: &Table, action: u64, space: u8, context: &str, stats: &mut ChaosStats) {
-    let eliminated = |table: &Table| table.seats.iter().filter(|seat| seat.eliminated_at != 0).count();
+fn assert_player_cash_flow(before: &EphemeralTable, after: &EphemeralTable, action: u64, space: u8, context: &str, stats: &mut ChaosStats) {
+    let eliminated = |table: &EphemeralTable| table.seats.iter().filter(|seat| seat.eliminated_at != 0).count();
     // The turn-order callback deals the starting cash instead of moving it.
     if eliminated(after) != eliminated(before) || before.vrf_purpose == VrfPurpose::Order {
         return;
     }
-    let total = |table: &Table| table.seats.iter().map(|seat| seat.cash).sum::<i64>();
+    let total = |table: &EphemeralTable| table.seats.iter().map(|seat| seat.cash).sum::<i64>();
     let seat = before.current_seat();
     let spec = BOARD.get(space as usize);
     let expected = match action {
@@ -705,7 +736,7 @@ fn percentile(sorted: &[u32], q: usize) -> u32 {
 #[test]
 #[ignore = "G5: 91,000 games; run with --release -- --ignored"]
 fn fuzz_ninety_one_thousand_games_on_one_reused_table() {
-    let mut table = Table { index: 9, bump: 251, board: [Lot::default(); SPACES], ..Table::default() };
+    let (mut table, mut house) = (EphemeralTable::new(Pubkey::default(), 251, 0), House::default());
     let mut rng = Rng(20_261_103);
     let mut now = 1_000_000i64;
     let mut outside_band = Vec::new();
@@ -715,7 +746,7 @@ fn fuzz_ninety_one_thousand_games_on_one_reused_table() {
             let mut trades = 0;
             let mut rounds: Vec<u32> = (0..PARITY_GAMES)
                 .map(|_| {
-                    let (round, _, game_trades) = bot_game(&mut table, &mut rng, players, target, &mut now, policy);
+                    let (round, _, game_trades) = bot_game(&mut table, &mut house, &mut rng, players, target, &mut now, policy);
                     trades += game_trades;
                     round
                 })
@@ -741,11 +772,11 @@ fn fuzz_ninety_one_thousand_games_on_one_reused_table() {
     }
     let mut stats = ChaosStats::default();
     for game in 0..CHAOS_GAMES {
-        chaos_game(&mut table, &mut rng, game, &mut now, &mut stats);
+        chaos_game(&mut table, &mut house, &mut rng, game, &mut now, &mut stats);
     }
     println!("chaos: {stats:?}");
     let games = 18 * PARITY_GAMES + CHAOS_GAMES;
-    println!("{games} games on one Table; final game_nonce {}", table.game_nonce);
+    println!("{games} games on one EphemeralTable; final game_nonce {}; liability {}", table.game_nonce, house.liability);
     assert_eq!(table.game_nonce as usize, games);
     assert!(stats.trades_completed > 0 && stats.offers > 0, "chaos never completed a trade");
     assert!(stats.forfeits > 0, "chaos never forfeited");
@@ -759,7 +790,7 @@ fn fuzz_ninety_one_thousand_games_on_one_reused_table() {
 #[ignore = "collusion measurement; run with --release -- --ignored"]
 fn fuzz_collusion_two_colluding_bots_in_four_player_games() {
     const GAMES: usize = 4_000;
-    let mut table = Table { index: 9, bump: 251, board: [Lot::default(); SPACES], ..Table::default() };
+    let (mut table, mut house) = (EphemeralTable::new(Pubkey::default(), 251, 0), House::default());
     let mut rng = Rng(20_261_104);
     let mut now = 1_000_000i64;
     println!("target pair | pair win% honest -> colluding (shift pp) | pair pot% honest -> colluding (shift pp) | trades/game honest -> colluding");
@@ -767,7 +798,7 @@ fn fuzz_collusion_two_colluding_bots_in_four_player_games() {
         let mut measure = |policy: TradePolicy| {
             let (mut wins, mut share, mut trades) = (0.0f64, 0.0f64, 0u32);
             for _ in 0..GAMES {
-                let (_, payouts, game_trades) = bot_game(&mut table, &mut rng, 4, target, &mut now, policy);
+                let (_, payouts, game_trades) = bot_game(&mut table, &mut house, &mut rng, 4, target, &mut now, policy);
                 let top = *payouts.iter().max().unwrap();
                 let winners = payouts.iter().filter(|&&payout| payout == top).count() as f64;
                 wins += payouts[..2].iter().filter(|&&payout| payout == top).count() as f64 / winners;

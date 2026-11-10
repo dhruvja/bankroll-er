@@ -4,8 +4,11 @@ use anchor_spl::{
     token::{self, Token, TokenAccount, Transfer},
 };
 use ephemeral_rollups_sdk::{
-    anchor::delegate, consts::ESPL_TOKEN_PROGRAM_ID, cpi::DelegateConfig,
+    anchor::delegate,
+    consts::{EPHEMERAL_VAULT_ID, ESPL_TOKEN_PROGRAM_ID, MAGIC_PROGRAM_ID},
+    cpi::DelegateConfig,
     dlp_api::state::DelegationRecord,
+    ephemeral_accounts::{self, EphemeralAccount},
 };
 use ephemeral_vrf_sdk::{
     anchor::{vrf, vrf_callback},
@@ -23,26 +26,24 @@ declare_id!("72xAdhJ15tqVXZ95oKKxBYfEbJpJsDThcMCwwtonibEq");
 pub const USDC_MINT: Pubkey = pubkey!("4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU");
 pub const PUBLIC_VALIDATOR: Pubkey = pubkey!("MAS1Dt9qreoRMQ14YQuhg8UTZMMzDdKhmkZMECCzk57");
 pub const ADMIN: Pubkey = pubkey!("653bMLonrEbTNbSM9g1vH8PJATH1uh6wYNr9SYEJSzsY");
-pub const TABLE_SEED: &[u8] = b"table_v2";
+pub const TABLE_SEED: &[u8] = b"table_v3";
+pub const HOUSE_SEED: &[u8] = b"house";
 pub const TREASURY_SEED: &[u8] = b"treasury";
 
 #[program]
 pub mod bankroll {
     use super::*;
 
-    pub fn create_table(ctx: Context<CreateTable>, index: u16) -> Result<()> {
-        let table = &mut ctx.accounts.table;
-        table.index = index;
-        table.bump = ctx.bumps.table;
-        // `init` zeroes the account, which would read as seat 0 owning every space.
-        table.board = [Lot::default(); board::SPACES];
+    /// ADMIN creates the house on base once. It is funded with SOL for table rent and delegated.
+    pub fn init_house(ctx: Context<InitHouse>) -> Result<()> {
+        ctx.accounts.house.bump = ctx.bumps.house;
         Ok(())
     }
 
-    pub fn delegate_table(ctx: Context<DelegateTable>, index: u16) -> Result<()> {
-        ctx.accounts.delegate_table(
+    pub fn delegate_house(ctx: Context<DelegateHouse>) -> Result<()> {
+        ctx.accounts.delegate_house(
             &ctx.accounts.admin,
-            &[TABLE_SEED, &index.to_le_bytes()],
+            &[HOUSE_SEED],
             DelegateConfig {
                 validator: Some(PUBLIC_VALIDATOR),
                 ..Default::default()
@@ -51,9 +52,12 @@ pub mod bankroll {
         Ok(())
     }
 
-    /// A zero-SOL host claims a Free table and pays its own entry in the same instruction.
+    /// A zero-SOL host opens its own table and pays its entry into the vault. On the host's first
+    /// game, or after its table was closed, the house creates the table on the ER and gives it a
+    /// fresh nonce range. Otherwise the host's Free table re-opens in place; a table still in a
+    /// game cannot, so each wallet hosts one table at a time.
     pub fn open_table(
-        mut ctx: Context<EnterTable>,
+        mut ctx: Context<OpenTable>,
         name: String,
         entry: u64,
         max_players: u8,
@@ -63,9 +67,31 @@ pub mod bankroll {
     ) -> Result<()> {
         require_public_er(&ctx.accounts.delegation_record)?;
         let now = Clock::get()?.unix_timestamp;
+        let table_bump = ctx.bumps.table;
         let accounts = &mut ctx.accounts;
-        accounts.table.open(
-            accounts.player.key(),
+        let host = accounts.host.key();
+        let info = accounts.table.to_account_info();
+        let mut table = if *info.owner == crate::ID {
+            Box::new(EphemeralTable::try_deserialize(&mut &info.try_borrow_data()?[..])?)
+        } else {
+            let house = accounts.house.to_account_info();
+            let floor = Rent::get()?
+                .minimum_balance(house.data_len())
+                .checked_add(ephemeral_accounts::rent(TABLE_SPACE as u32))
+                .ok_or(GameError::Overflow)?;
+            require!(house.lamports() >= floor, GameError::HouseOutOfRent);
+            let house_bump = [accounts.house.bump];
+            let table_bump = [table_bump];
+            let house_seeds: &[&[u8]] = &[HOUSE_SEED, &house_bump];
+            let table_seeds: &[&[u8]] = &[TABLE_SEED, host.as_ref(), &table_bump];
+            EphemeralAccount::new(&house, &info, &accounts.rent_vault)
+                .with_signer_seeds(&[house_seeds, table_seeds])
+                .create(TABLE_SPACE as u32)?;
+            let nonce = accounts.house.next_table_nonce()?;
+            Box::new(EphemeralTable::new(host, table_bump[0], nonce))
+        };
+        table.open(
+            host,
             engine::encode_name(&name)?,
             entry,
             max_players,
@@ -74,10 +100,19 @@ pub mod bankroll {
             start_cash,
             now,
         )?;
-        pay_entry(accounts)
+        table.credit(&mut accounts.house, table.entry)?;
+        pay_entry(
+            &accounts.host,
+            &accounts.player_token,
+            &accounts.vault_token,
+            &accounts.token_program,
+            table.entry,
+        )?;
+        let mut data = info.try_borrow_mut_data()?;
+        table.try_serialize(&mut &mut data[..])
     }
 
-    pub fn join_table(mut ctx: Context<EnterTable>, expected_nonce: u64, name: String) -> Result<()> {
+    pub fn join_table(mut ctx: Context<JoinTable>, expected_nonce: u64, name: String) -> Result<()> {
         require_public_er(&ctx.accounts.delegation_record)?;
         let now = Clock::get()?.unix_timestamp;
         let accounts = &mut ctx.accounts;
@@ -87,7 +122,36 @@ pub mod bankroll {
             expected_nonce,
             now,
         )?;
-        pay_entry(accounts)
+        let entry = accounts.table.entry;
+        accounts.table.credit(&mut accounts.house, entry)?;
+        pay_entry(
+            &accounts.player,
+            &accounts.player_token,
+            &accounts.vault_token,
+            &accounts.token_program,
+            entry,
+        )
+    }
+
+    /// Anyone closes a Free table that holds nothing once the grace after its last game has
+    /// passed. The ER-only account is deleted and its rent goes back to the house.
+    pub fn close_table(ctx: Context<CloseTable>) -> Result<()> {
+        let accounts = &ctx.accounts;
+        let info = accounts.table.to_account_info();
+        let table = Box::new(EphemeralTable::try_deserialize(&mut &info.try_borrow_data()?[..])?);
+        let address = Pubkey::create_program_address(
+            &[TABLE_SEED, table.host.as_ref(), &[table.bump]],
+            &crate::ID,
+        )
+        .map_err(|_| GameError::InvalidAccount)?;
+        require_keys_eq!(info.key(), address, GameError::InvalidAccount);
+        table.require_closable(Clock::get()?.unix_timestamp)?;
+        let house_bump = [accounts.house.bump];
+        let house_seeds: &[&[u8]] = &[HOUSE_SEED, &house_bump];
+        EphemeralAccount::new(&accounts.house.to_account_info(), &info, &accounts.rent_vault)
+            .with_signer_seeds(&[house_seeds])
+            .close()?;
+        Ok(())
     }
 
     pub fn cancel_or_expire(ctx: Context<TableAction>) -> Result<()> {
@@ -100,13 +164,14 @@ pub mod bankroll {
     /// payout when the game had finished. Anyone may send it; the money only ever goes to the
     /// seat's own canonical accounts. If those are gone, the share stays until the refund grace
     /// (`stage_deadline`) ends and then goes to the treasury, so a closed account cannot keep the
-    /// table out of the pool. The refund that frees the table sweeps what custody still holds (a
-    /// finished game's fee, stray deposits) to the treasury, so a Free table holds nothing.
+    /// table from being freed. The refund that frees the table sends what it still holds (a
+    /// finished game's fee and dust) to the treasury, so a Free table holds nothing.
     pub fn refund_player(mut ctx: Context<RefundPlayer>, seat: u8) -> Result<()> {
         require_public_er(&ctx.accounts.delegation_record)?;
-        let grace_over = Clock::get()?.unix_timestamp >= ctx.accounts.table.stage_deadline;
-        let (wallet, amount) = ctx.accounts.table.refund(seat as usize)?;
+        let now = Clock::get()?.unix_timestamp;
         let accounts = &mut ctx.accounts;
+        let grace_over = now >= accounts.table.stage_deadline;
+        let (wallet, amount) = accounts.table.refund(seat as usize, now)?;
         if amount > 0 {
             let live = payable(wallet, &accounts.player_token, &accounts.player_custody_record)?;
             let destination = if live {
@@ -115,27 +180,26 @@ pub mod bankroll {
                 require!(grace_over, GameError::RecipientMissing);
                 accounts.treasury_token.to_account_info()
             };
-            transfer_from_table(
-                &accounts.table,
-                &accounts.table_token,
+            pay_from_vault(
+                &mut accounts.table,
+                &mut accounts.house,
+                &accounts.vault_token,
                 destination,
                 &accounts.token_program,
                 amount,
             )?;
         }
-        if accounts.table.phase == TablePhase::Free {
-            accounts.table_token.reload()?;
-            let rest = accounts.table_token.amount;
-            if rest > 0 {
-                let treasury = accounts.treasury_token.to_account_info();
-                transfer_from_table(
-                    &accounts.table,
-                    &accounts.table_token,
-                    treasury,
-                    &accounts.token_program,
-                    rest,
-                )?;
-            }
+        if accounts.table.phase == TablePhase::Free && accounts.table.held > 0 {
+            let rest = accounts.table.held;
+            let treasury = accounts.treasury_token.to_account_info();
+            pay_from_vault(
+                &mut accounts.table,
+                &mut accounts.house,
+                &accounts.vault_token,
+                treasury,
+                &accounts.token_program,
+                rest,
+            )?;
         }
         Ok(())
     }
@@ -241,63 +305,60 @@ pub mod bankroll {
             .force_timeout(Clock::get()?.unix_timestamp)
     }
 
-    /// Pays every ranked share from table custody in one transaction, sweeps the fee, dust and
-    /// any stray deposit to the treasury and frees the table. `remaining_accounts` holds (canonical
-    /// ATA, delegation record of its eATA) for every seat, in seat order; only paid seats' accounts
-    /// are read, so a seat with nothing to receive cannot block settlement. A paid seat whose
-    /// accounts are gone or no longer delegated here cannot block it either: its share stays in
-    /// custody and the table waits in Refunding for that seat alone.
-    pub fn settle<'info>(ctx: Context<'info, Settle<'info>>) -> Result<()> {
+    /// Pays every ranked share from the vault in one transaction, sends the fee and dust to the
+    /// treasury and frees the table. `remaining_accounts` holds (canonical ATA, delegation record
+    /// of its eATA) for every seat, in seat order; only paid seats' accounts are read, so a seat
+    /// with nothing to receive cannot block settlement. A paid seat whose accounts are gone or no
+    /// longer delegated here cannot block it either: the table keeps holding its share and waits
+    /// in Refunding for that seat alone.
+    pub fn settle<'info>(mut ctx: Context<'info, Settle<'info>>) -> Result<()> {
         require_public_er(&ctx.accounts.delegation_record)?;
-        let payouts = ctx.accounts.table.payouts()?;
-        let count = ctx.accounts.table.count();
-        let custody = ctx.accounts.table_token.amount;
+        let remaining = ctx.remaining_accounts;
+        let accounts = &mut ctx.accounts;
+        let payouts = accounts.table.payouts()?;
+        let count = accounts.table.count();
         require!(
-            custody >= ctx.accounts.table.pot()?,
+            accounts.table.held == accounts.table.pot()?,
             GameError::CustodyShort
         );
-        let remaining = ctx.remaining_accounts;
         require!(remaining.len() == count * 2, GameError::InvalidAccount);
-        let (mut paid, mut owed, mut unpaid) = (0u64, 0u64, [false; MAX_SEATS]);
+        let (mut owed, mut unpaid) = (0u64, [false; MAX_SEATS]);
         for (seat, pair) in remaining.chunks(2).enumerate() {
             let payout = payouts[seat];
             if payout == 0 {
                 continue;
             }
-            if payable(ctx.accounts.table.seats[seat].wallet, &pair[0], &pair[1])? {
-                transfer_from_table(
-                    &ctx.accounts.table,
-                    &ctx.accounts.table_token,
+            if payable(accounts.table.seats[seat].wallet, &pair[0], &pair[1])? {
+                pay_from_vault(
+                    &mut accounts.table,
+                    &mut accounts.house,
+                    &accounts.vault_token,
                     pair[0].clone(),
-                    &ctx.accounts.token_program,
+                    &accounts.token_program,
                     payout,
                 )?;
-                paid = paid.checked_add(payout).ok_or(GameError::Overflow)?;
             } else {
                 unpaid[seat] = true;
                 owed = owed.checked_add(payout).ok_or(GameError::Overflow)?;
             }
         }
-        let fee = custody
-            .checked_sub(paid)
-            .and_then(|rest| rest.checked_sub(owed))
+        let fee = accounts
+            .table
+            .held
+            .checked_sub(owed)
             .ok_or(GameError::Overflow)?;
-        transfer_from_table(
-            &ctx.accounts.table,
-            &ctx.accounts.table_token,
-            ctx.accounts.treasury_token.to_account_info(),
-            &ctx.accounts.token_program,
+        let treasury = accounts.treasury_token.to_account_info();
+        pay_from_vault(
+            &mut accounts.table,
+            &mut accounts.house,
+            &accounts.vault_token,
+            treasury,
+            &accounts.token_program,
             fee,
         )?;
-        ctx.accounts.table_token.reload()?;
-        require!(
-            ctx.accounts.table_token.amount == owed,
-            GameError::CustodyNotEmpty
-        );
-        ctx.accounts
+        accounts
             .table
-            .record_settlement(payouts, unpaid, Clock::get()?.unix_timestamp);
-        Ok(())
+            .record_settlement(payouts, unpaid, Clock::get()?.unix_timestamp)
     }
 
     /// ADMIN moves accrued fees from the treasury custody to its own canonical account on the ER,
@@ -356,21 +417,54 @@ fn payable(wallet: Pubkey, token: &AccountInfo, custody_record: &AccountInfo) ->
     Ok(!account.is_frozen())
 }
 
-fn pay_entry(accounts: &mut EnterTable) -> Result<()> {
+fn pay_entry<'info>(
+    player: &Signer<'info>,
+    player_token: &Account<'info, TokenAccount>,
+    vault_token: &Account<'info, TokenAccount>,
+    token_program: &Program<'info, Token>,
+    entry: u64,
+) -> Result<()> {
     token::transfer(
         CpiContext::new(
-            accounts.token_program.key(),
+            token_program.key(),
             Transfer {
-                from: accounts.player_token.to_account_info(),
-                to: accounts.table_token.to_account_info(),
-                authority: accounts.player.to_account_info(),
+                from: player_token.to_account_info(),
+                to: vault_token.to_account_info(),
+                authority: player.to_account_info(),
             },
         ),
-        accounts.table.entry,
+        entry,
     )
 }
 
-fn vrf_request(payer: Pubkey, table: &Account<Table>) -> anchor_lang::solana_program::instruction::Instruction {
+/// Every transfer out of the shared vault goes through here: it is first debited from the acting
+/// table's `held` and the house `liability`, so no table can pay out more than it holds.
+fn pay_from_vault<'info>(
+    table: &mut EphemeralTable,
+    house: &mut Account<'info, House>,
+    vault_token: &Account<'info, TokenAccount>,
+    to: AccountInfo<'info>,
+    token_program: &Program<'info, Token>,
+    amount: u64,
+) -> Result<()> {
+    table.debit(house, amount)?;
+    let bump = [house.bump];
+    let seeds: &[&[u8]] = &[HOUSE_SEED, &bump];
+    token::transfer(
+        CpiContext::new_with_signer(
+            token_program.key(),
+            Transfer {
+                from: vault_token.to_account_info(),
+                to,
+                authority: house.to_account_info(),
+            },
+            &[seeds],
+        ),
+        amount,
+    )
+}
+
+fn vrf_request(payer: Pubkey, table: &Account<EphemeralTable>) -> anchor_lang::solana_program::instruction::Instruction {
     create_request_randomness_ix(RequestRandomnessParams {
         payer,
         oracle_queue: ephemeral_vrf_sdk::consts::DEFAULT_EPHEMERAL_QUEUE,
@@ -391,8 +485,8 @@ fn vrf_request(payer: Pubkey, table: &Account<Table>) -> anchor_lang::solana_pro
     })
 }
 
-/// On base a Table is DLP-owned (or not yet delegated). Only on the ER can its canonical
-/// public-validator delegation record and a program-owned Table coexist.
+/// On base the house is DLP-owned. Only on the ER can its canonical public-validator delegation
+/// record and a program-owned house coexist.
 fn require_public_er(record: &AccountInfo) -> Result<()> {
     require!(
         delegated_to_public_er(record, crate::ID),
@@ -422,66 +516,81 @@ pub fn treasury_address() -> Pubkey {
     Pubkey::find_program_address(&[TREASURY_SEED], &crate::ID).0
 }
 
-fn transfer_from_table<'info>(
-    table: &Account<'info, Table>,
-    from: &Account<'info, TokenAccount>,
-    to: AccountInfo<'info>,
-    token_program: &Program<'info, Token>,
-    amount: u64,
-) -> Result<()> {
-    let index = table.index.to_le_bytes();
-    let bump = [table.bump];
-    let seeds: &[&[u8]] = &[TABLE_SEED, &index, &bump];
-    token::transfer(
-        CpiContext::new_with_signer(
-            token_program.key(),
-            Transfer {
-                from: from.to_account_info(),
-                to,
-                authority: table.to_account_info(),
-            },
-            &[seeds],
-        ),
-        amount,
-    )
+pub fn house_address() -> Pubkey {
+    Pubkey::find_program_address(&[HOUSE_SEED], &crate::ID).0
+}
+
+pub fn table_address(host: Pubkey) -> Pubkey {
+    Pubkey::find_program_address(&[TABLE_SEED, host.as_ref()], &crate::ID).0
 }
 
 #[derive(Accounts)]
-#[instruction(index: u16)]
-pub struct CreateTable<'info> {
+pub struct InitHouse<'info> {
     #[account(mut, address = ADMIN)]
     pub admin: Signer<'info>,
-    #[account(init, payer = admin, space = TABLE_SPACE, seeds = [TABLE_SEED, &index.to_le_bytes()], bump)]
-    pub table: Box<Account<'info, Table>>,
+    #[account(init, payer = admin, space = HOUSE_SPACE, seeds = [HOUSE_SEED], bump)]
+    pub house: Account<'info, House>,
     pub system_program: Program<'info, System>,
 }
 
 #[delegate]
 #[derive(Accounts)]
-#[instruction(index: u16)]
-pub struct DelegateTable<'info> {
+pub struct DelegateHouse<'info> {
     #[account(mut, address = ADMIN)]
     pub admin: Signer<'info>,
-    /// CHECK: Canonical table PDA, created by `create_table`; the DLP takes ownership.
-    #[account(mut, del, seeds = [TABLE_SEED, &index.to_le_bytes()], bump)]
-    pub table: UncheckedAccount<'info>,
+    /// CHECK: Canonical house PDA, created by `init_house`; the DLP takes ownership.
+    #[account(mut, del, seeds = [HOUSE_SEED], bump)]
+    pub house: UncheckedAccount<'info>,
 }
 
 #[derive(Accounts)]
-pub struct EnterTable<'info> {
+pub struct OpenTable<'info> {
+    pub host: Signer<'info>,
+    /// CHECK: The host's table, missing or an EphemeralTable; `open_table` creates or
+    /// deserializes it. Only this program can sign for the address, so only it can create it.
+    #[account(mut, seeds = [TABLE_SEED, host.key().as_ref()], bump)]
+    pub table: UncheckedAccount<'info>,
+    #[account(mut, seeds = [HOUSE_SEED], bump = house.bump)]
+    pub house: Account<'info, House>,
+    /// CHECK: The house's canonical live delegation record, validated by require_public_er.
+    #[account(address = ephemeral_rollups_sdk::pda::delegation_record_pda_from_delegated_account(&house.key()))]
+    pub delegation_record: UncheckedAccount<'info>,
+    #[account(mut, address = get_associated_token_address(&host.key(), &USDC_MINT), token::mint = USDC_MINT, token::authority = host)]
+    pub player_token: Box<Account<'info, TokenAccount>>,
+    #[account(mut, address = get_associated_token_address(&house.key(), &USDC_MINT), token::mint = USDC_MINT, token::authority = house)]
+    pub vault_token: Box<Account<'info, TokenAccount>>,
+    /// CHECK: Canonical public vault custody restored to its original owner on the ER.
+    #[account(address = custody_address(house.key()), owner = ESPL_TOKEN_PROGRAM_ID)]
+    pub vault_eata: UncheckedAccount<'info>,
+    /// CHECK: Canonical public player custody on the same ER.
+    #[account(address = custody_address(host.key()), owner = ESPL_TOKEN_PROGRAM_ID)]
+    pub player_eata: UncheckedAccount<'info>,
+    /// CHECK: The ER's ephemeral rent vault; the magic program checks it.
+    #[account(mut, address = EPHEMERAL_VAULT_ID)]
+    pub rent_vault: UncheckedAccount<'info>,
+    /// CHECK: The magic program, called only to create a missing table.
+    #[account(address = MAGIC_PROGRAM_ID)]
+    pub magic_program: UncheckedAccount<'info>,
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct JoinTable<'info> {
     pub player: Signer<'info>,
-    #[account(mut, seeds = [TABLE_SEED, &table.index.to_le_bytes()], bump = table.bump)]
-    pub table: Box<Account<'info, Table>>,
-    /// CHECK: Canonical live delegation record, validated by require_public_er.
-    #[account(address = ephemeral_rollups_sdk::pda::delegation_record_pda_from_delegated_account(&table.key()))]
+    #[account(mut, seeds = [TABLE_SEED, table.host.as_ref()], bump = table.bump)]
+    pub table: Box<Account<'info, EphemeralTable>>,
+    #[account(mut, seeds = [HOUSE_SEED], bump = house.bump)]
+    pub house: Account<'info, House>,
+    /// CHECK: The house's canonical live delegation record, validated by require_public_er.
+    #[account(address = ephemeral_rollups_sdk::pda::delegation_record_pda_from_delegated_account(&house.key()))]
     pub delegation_record: UncheckedAccount<'info>,
     #[account(mut, address = get_associated_token_address(&player.key(), &USDC_MINT), token::mint = USDC_MINT, token::authority = player)]
     pub player_token: Box<Account<'info, TokenAccount>>,
-    #[account(mut, address = get_associated_token_address(&table.key(), &USDC_MINT), token::mint = USDC_MINT, token::authority = table)]
-    pub table_token: Box<Account<'info, TokenAccount>>,
-    /// CHECK: Canonical public table custody restored to its original owner on the ER.
-    #[account(address = custody_address(table.key()), owner = ESPL_TOKEN_PROGRAM_ID)]
-    pub table_eata: UncheckedAccount<'info>,
+    #[account(mut, address = get_associated_token_address(&house.key(), &USDC_MINT), token::mint = USDC_MINT, token::authority = house)]
+    pub vault_token: Box<Account<'info, TokenAccount>>,
+    /// CHECK: Canonical public vault custody restored to its original owner on the ER.
+    #[account(address = custody_address(house.key()), owner = ESPL_TOKEN_PROGRAM_ID)]
+    pub vault_eata: UncheckedAccount<'info>,
     /// CHECK: Canonical public player custody on the same ER.
     #[account(address = custody_address(player.key()), owner = ESPL_TOKEN_PROGRAM_ID)]
     pub player_eata: UncheckedAccount<'info>,
@@ -489,28 +598,45 @@ pub struct EnterTable<'info> {
 }
 
 #[derive(Accounts)]
+pub struct CloseTable<'info> {
+    /// CHECK: An EphemeralTable; `close_table` deserializes it and checks its address.
+    #[account(mut, owner = crate::ID)]
+    pub table: UncheckedAccount<'info>,
+    #[account(mut, seeds = [HOUSE_SEED], bump = house.bump)]
+    pub house: Account<'info, House>,
+    /// CHECK: The ER's ephemeral rent vault; the magic program checks it.
+    #[account(mut, address = EPHEMERAL_VAULT_ID)]
+    pub rent_vault: UncheckedAccount<'info>,
+    /// CHECK: The magic program, which deletes the table.
+    #[account(address = MAGIC_PROGRAM_ID)]
+    pub magic_program: UncheckedAccount<'info>,
+}
+
+#[derive(Accounts)]
 pub struct TableAction<'info> {
     pub signer: Signer<'info>,
-    #[account(mut, seeds = [TABLE_SEED, &table.index.to_le_bytes()], bump = table.bump)]
-    pub table: Box<Account<'info, Table>>,
+    #[account(mut, seeds = [TABLE_SEED, table.host.as_ref()], bump = table.bump)]
+    pub table: Box<Account<'info, EphemeralTable>>,
 }
 
 #[derive(Accounts)]
 pub struct RefundPlayer<'info> {
-    #[account(mut, seeds = [TABLE_SEED, &table.index.to_le_bytes()], bump = table.bump)]
-    pub table: Box<Account<'info, Table>>,
-    /// CHECK: Canonical live delegation record, validated by require_public_er.
-    #[account(address = ephemeral_rollups_sdk::pda::delegation_record_pda_from_delegated_account(&table.key()))]
+    #[account(mut, seeds = [TABLE_SEED, table.host.as_ref()], bump = table.bump)]
+    pub table: Box<Account<'info, EphemeralTable>>,
+    #[account(mut, seeds = [HOUSE_SEED], bump = house.bump)]
+    pub house: Account<'info, House>,
+    /// CHECK: The house's canonical live delegation record, validated by require_public_er.
+    #[account(address = ephemeral_rollups_sdk::pda::delegation_record_pda_from_delegated_account(&house.key()))]
     pub delegation_record: UncheckedAccount<'info>,
-    #[account(mut, address = get_associated_token_address(&table.key(), &USDC_MINT), token::mint = USDC_MINT, token::authority = table)]
-    pub table_token: Box<Account<'info, TokenAccount>>,
+    #[account(mut, address = get_associated_token_address(&house.key(), &USDC_MINT), token::mint = USDC_MINT, token::authority = house)]
+    pub vault_token: Box<Account<'info, TokenAccount>>,
     /// CHECK: The seat's canonical USDC ATA, checked by `payable` when the refund is nonzero. Not
     /// `mut`: clients pass it writable when it is live and read-only when it is gone (the ER
     /// rejects writable accounts it does not hold), and a transfer to it needs it writable.
     pub player_token: UncheckedAccount<'info>,
-    /// CHECK: Canonical public table custody on the ER.
-    #[account(address = custody_address(table.key()), owner = ESPL_TOKEN_PROGRAM_ID)]
-    pub table_eata: UncheckedAccount<'info>,
+    /// CHECK: Canonical public vault custody on the ER.
+    #[account(address = custody_address(house.key()), owner = ESPL_TOKEN_PROGRAM_ID)]
+    pub vault_eata: UncheckedAccount<'info>,
     /// CHECK: Delegation record of the seat's canonical eATA, checked by `payable`.
     pub player_custody_record: UncheckedAccount<'info>,
     #[account(mut, address = get_associated_token_address(&treasury_address(), &USDC_MINT), token::mint = USDC_MINT, constraint = treasury_token.owner == treasury_address() @ GameError::InvalidAccount)]
@@ -526,8 +652,8 @@ pub struct RefundPlayer<'info> {
 pub struct RequestRandomness<'info> {
     #[account(mut)]
     pub payer: Signer<'info>,
-    #[account(mut, seeds = [TABLE_SEED, &table.index.to_le_bytes()], bump = table.bump)]
-    pub table: Box<Account<'info, Table>>,
+    #[account(mut, seeds = [TABLE_SEED, table.host.as_ref()], bump = table.bump)]
+    pub table: Box<Account<'info, EphemeralTable>>,
     /// CHECK: Canonical public queue must be restored to VRF ownership on the ER.
     #[account(mut, address = ephemeral_vrf_sdk::consts::DEFAULT_EPHEMERAL_QUEUE, owner = ephemeral_vrf_sdk::consts::VRF_PROGRAM_ID)]
     pub oracle_queue: UncheckedAccount<'info>,
@@ -536,22 +662,24 @@ pub struct RequestRandomness<'info> {
 #[vrf_callback]
 #[derive(Accounts)]
 pub struct ConsumeRandomness<'info> {
-    #[account(mut, seeds = [TABLE_SEED, &table.index.to_le_bytes()], bump = table.bump)]
-    pub table: Box<Account<'info, Table>>,
+    #[account(mut, seeds = [TABLE_SEED, table.host.as_ref()], bump = table.bump)]
+    pub table: Box<Account<'info, EphemeralTable>>,
 }
 
 #[derive(Accounts)]
 pub struct Settle<'info> {
-    #[account(mut, seeds = [TABLE_SEED, &table.index.to_le_bytes()], bump = table.bump)]
-    pub table: Box<Account<'info, Table>>,
-    /// CHECK: Canonical live delegation record, validated by require_public_er.
-    #[account(address = ephemeral_rollups_sdk::pda::delegation_record_pda_from_delegated_account(&table.key()))]
+    #[account(mut, seeds = [TABLE_SEED, table.host.as_ref()], bump = table.bump)]
+    pub table: Box<Account<'info, EphemeralTable>>,
+    #[account(mut, seeds = [HOUSE_SEED], bump = house.bump)]
+    pub house: Account<'info, House>,
+    /// CHECK: The house's canonical live delegation record, validated by require_public_er.
+    #[account(address = ephemeral_rollups_sdk::pda::delegation_record_pda_from_delegated_account(&house.key()))]
     pub delegation_record: UncheckedAccount<'info>,
-    #[account(mut, address = get_associated_token_address(&table.key(), &USDC_MINT), token::mint = USDC_MINT, token::authority = table)]
-    pub table_token: Box<Account<'info, TokenAccount>>,
-    /// CHECK: Canonical public table custody on the ER.
-    #[account(address = custody_address(table.key()), owner = ESPL_TOKEN_PROGRAM_ID)]
-    pub table_eata: UncheckedAccount<'info>,
+    #[account(mut, address = get_associated_token_address(&house.key(), &USDC_MINT), token::mint = USDC_MINT, token::authority = house)]
+    pub vault_token: Box<Account<'info, TokenAccount>>,
+    /// CHECK: Canonical public vault custody on the ER.
+    #[account(address = custody_address(house.key()), owner = ESPL_TOKEN_PROGRAM_ID)]
+    pub vault_eata: UncheckedAccount<'info>,
     #[account(mut, address = get_associated_token_address(&treasury_address(), &USDC_MINT), token::mint = USDC_MINT, constraint = treasury_token.owner == treasury_address() @ GameError::InvalidAccount)]
     pub treasury_token: Box<Account<'info, TokenAccount>>,
     /// CHECK: Canonical shared protocol custody on the same ER.

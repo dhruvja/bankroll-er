@@ -1,6 +1,8 @@
 //! Runs the production SBF (`target/deploy/bankroll.so`, build G2 first) with real SPL Token CPIs.
 //! Delegation records, ER account ownership, eATA custody and the VRF identity signature are
-//! fixtures. Requests run against the real VRF program (`tests/fixtures/vrf_program.so`, dumped
+//! fixtures. LiteSVM has no magic program, so the delegated house and the host's ephemeral table
+//! are seeded with `set_account`: `open_table`'s create branch and `close_table`'s delete run only
+//! on devnet (G8, G12); here they are exercised up to the magic-program call. Requests run against the real VRF program (`tests/fixtures/vrf_program.so`, dumped
 //! from devnet) and a copy of the ER queue (`tests/fixtures/ephemeral_queue.bin`); no oracle runs
 //! here, so callbacks are delivered by the scoped identity with signature verification disabled.
 use anchor_lang::{
@@ -8,8 +10,9 @@ use anchor_lang::{
     ToAccountMetas,
 };
 use bankroll::{
-    custody_address, treasury_address, Stage, Table, TablePhase, VrfPurpose, ADMIN, NO_OWNER,
-    REFUND_GRACE_SECONDS, TABLE_SEED, TABLE_SPACE, USDC_MINT,
+    custody_address, house_address, table_address, treasury_address, EphemeralTable, House, Stage,
+    TablePhase, VrfPurpose, ADMIN, CLOSE_GRACE_SECONDS, HOUSE_SPACE, NO_OWNER, REFUND_GRACE_SECONDS,
+    TABLE_SEED, TABLE_SPACE, USDC_MINT,
 };
 use litesvm::{
     types::{FailedTransactionMetadata, TransactionMetadata},
@@ -40,8 +43,8 @@ fn ata(owner: Address) -> Address {
     )
     .0
 }
-fn record(table: Address) -> Address {
-    ephemeral_rollups_sdk::pda::delegation_record_pda_from_delegated_account(&table)
+fn record(delegated: Address) -> Address {
+    ephemeral_rollups_sdk::pda::delegation_record_pda_from_delegated_account(&delegated)
 }
 fn set_data(svm: &mut LiteSVM, address: Address, owner: Address, data: Vec<u8>) {
     let lamports = svm.minimum_balance_for_rent_exemption(data.len());
@@ -87,11 +90,18 @@ fn balance(svm: &LiteSVM, owner: Address) -> u64 {
         .map_or(0, |account| TokenAccount::unpack(&account.data).unwrap().amount)
 }
 
+/// Lamports the house starts with: 0.1 SOL, as phase 02 funds it.
+const HOUSE_LAMPORTS: u64 = 100_000_000;
+/// `tables_created` when the harness table was created: its nonces start at 1 << 32.
+const INCARNATION: u64 = 1;
+
 struct Harness {
     svm: LiteSVM,
     payer: Keypair,
     players: Vec<Keypair>,
+    /// Seat 0's table.
     table: Address,
+    house: Address,
     treasury: Address,
 }
 
@@ -107,13 +117,17 @@ impl Harness {
         set_data(&mut svm, ephemeral_vrf_sdk::consts::DEFAULT_EPHEMERAL_QUEUE, ephemeral_vrf_sdk::consts::VRF_PROGRAM_ID, queue);
         let payer = Keypair::new();
         svm.airdrop(&payer.pubkey(), 10_000_000_000).unwrap();
-        let (table, bump) = Address::find_program_address(&[TABLE_SEED, &7u16.to_le_bytes()], &bankroll::ID);
-        let treasury = treasury_address();
-        let mut h = Self { svm, payer, players: (0..4).map(|_| Keypair::new()).collect(), table, treasury };
-        h.write(&Table { index: 7, bump, ..Table::default() });
-        set_public_record(&mut h.svm, table, bankroll::ID);
-        set_token(&mut h.svm, table, USDC_MINT, 0, false);
+        let players: Vec<Keypair> = (0..4).map(|_| Keypair::new()).collect();
+        let table = table_address(players[0].pubkey());
+        let (house, treasury) = (house_address(), treasury_address());
+        let mut h = Self { svm, payer, players, table, house, treasury };
+        // The delegated house as the ER shows it: program-owned, funded, one table created so far.
+        let (_, house_bump) = Address::find_program_address(&[bankroll::HOUSE_SEED], &bankroll::ID);
+        h.write_house(&House { bump: house_bump, liability: 0, tables_created: INCARNATION + 1 });
+        set_public_record(&mut h.svm, house, bankroll::ID);
+        set_token(&mut h.svm, house, USDC_MINT, 0, false);
         set_token(&mut h.svm, treasury, USDC_MINT, 0, false);
+        h.seed_table(0);
         for player in &h.players {
             // Players hold USDC but zero lamports; the network fee payer is separate.
             set_token(&mut h.svm, player.pubkey(), USDC_MINT, USDC, false);
@@ -121,19 +135,42 @@ impl Harness {
         h.clock(T0);
         h
     }
+    /// The Free table `open_table` would have created for `seat`'s wallet in incarnation 1.
+    fn seed_table(&mut self, seat: usize) -> Address {
+        let host = self.wallet(seat);
+        let (address, bump) = Address::find_program_address(&[TABLE_SEED, host.as_ref()], &bankroll::ID);
+        self.write_at(address, &EphemeralTable::new(host, bump, INCARNATION << 32));
+        address
+    }
+    fn write_house(&mut self, house: &House) {
+        let mut data = Vec::new();
+        house.try_serialize(&mut data).unwrap();
+        data.resize(HOUSE_SPACE, 0);
+        let account = Account { lamports: HOUSE_LAMPORTS, data, owner: bankroll::ID, executable: false, rent_epoch: 0 };
+        self.svm.set_account(self.house, account).unwrap();
+    }
+    fn read_house(&self) -> House {
+        House::try_deserialize(&mut self.svm.get_account(&self.house).unwrap().data.as_slice()).unwrap()
+    }
     fn clock(&mut self, now: i64) {
         let mut clock = self.svm.get_sysvar::<Clock>();
         clock.unix_timestamp = now;
         self.svm.set_sysvar(&clock);
     }
-    fn read(&self) -> Table {
-        Table::try_deserialize(&mut self.svm.get_account(&self.table).unwrap().data.as_slice()).unwrap()
+    fn read(&self) -> EphemeralTable {
+        self.read_at(self.table)
     }
-    fn write(&mut self, table: &Table) {
+    fn read_at(&self, address: Address) -> EphemeralTable {
+        EphemeralTable::try_deserialize(&mut self.svm.get_account(&address).unwrap().data.as_slice()).unwrap()
+    }
+    fn write(&mut self, table: &EphemeralTable) {
+        self.write_at(self.table, table);
+    }
+    fn write_at(&mut self, address: Address, table: &EphemeralTable) {
         let mut data = Vec::new();
         table.try_serialize(&mut data).unwrap();
         data.resize(TABLE_SPACE, 0);
-        set_data(&mut self.svm, self.table, bankroll::ID, data);
+        set_data(&mut self.svm, address, bankroll::ID, data);
     }
     fn wallet(&self, seat: usize) -> Address {
         self.players[seat].pubkey()
@@ -157,31 +194,67 @@ impl Harness {
         tx.message.recent_blockhash = self.svm.latest_blockhash();
         self.svm.send_transaction(tx)
     }
-    fn enter(&self, seat: usize, data: impl InstructionData) -> Instruction {
-        let player = self.wallet(seat);
+    /// `open_table` signed by `seat` for its own table.
+    fn open_ix(&self, seat: usize, data: bankroll::instruction::OpenTable) -> Instruction {
+        let host = self.wallet(seat);
         ix(
-            bankroll::accounts::EnterTable {
-                player,
-                table: self.table,
-                delegation_record: record(self.table),
-                player_token: ata(player),
-                table_token: ata(self.table),
-                table_eata: custody_address(self.table),
-                player_eata: custody_address(player),
+            bankroll::accounts::OpenTable {
+                host,
+                table: table_address(host),
+                house: self.house,
+                delegation_record: record(self.house),
+                player_token: ata(host),
+                vault_token: ata(self.house),
+                vault_eata: custody_address(self.house),
+                player_eata: custody_address(host),
+                rent_vault: ephemeral_rollups_sdk::consts::EPHEMERAL_VAULT_ID,
+                magic_program: ephemeral_rollups_sdk::consts::MAGIC_PROGRAM_ID,
                 token_program: spl_token_interface::ID,
             },
             data,
         )
     }
+    fn open_args(players: u8, target: u64) -> bankroll::instruction::OpenTable {
+        bankroll::instruction::OpenTable { name: "Host".into(), entry: USDC, max_players: players, target, theme: 0, start_cash: 1500 }
+    }
     fn open(&mut self, players: u8, target: u64) {
-        let open = self.enter(0, bankroll::instruction::OpenTable { name: "Host".into(), entry: USDC, max_players: players, target, theme: 0, start_cash: 1500 });
+        let open = self.open_ix(0, Self::open_args(players, target));
         let host = self.players[0].insecure_clone();
         self.send(&[&host], open).unwrap();
     }
-    fn join(&mut self, seat: usize, nonce: u64) -> Result<TransactionMetadata, FailedTransactionMetadata> {
-        let join = self.enter(seat, bankroll::instruction::JoinTable { expected_nonce: nonce, name: format!("P{seat}") });
+    fn join_ix(&self, seat: usize, table: Address, nonce: u64) -> Instruction {
+        let player = self.wallet(seat);
+        ix(
+            bankroll::accounts::JoinTable {
+                player,
+                table,
+                house: self.house,
+                delegation_record: record(self.house),
+                player_token: ata(player),
+                vault_token: ata(self.house),
+                vault_eata: custody_address(self.house),
+                player_eata: custody_address(player),
+                token_program: spl_token_interface::ID,
+            },
+            bankroll::instruction::JoinTable { expected_nonce: nonce, name: format!("P{seat}") },
+        )
+    }
+    /// Joins seat 0's table with the invite nonce of its first game in this incarnation plus `game - 1`.
+    fn join(&mut self, seat: usize, game: u64) -> Result<TransactionMetadata, FailedTransactionMetadata> {
+        let join = self.join_ix(seat, self.table, (INCARNATION << 32) + game);
         let player = self.players[seat].insecure_clone();
         self.send(&[&player], join)
+    }
+    fn close_ix(&self, table: Address) -> Instruction {
+        ix(
+            bankroll::accounts::CloseTable {
+                table,
+                house: self.house,
+                rent_vault: ephemeral_rollups_sdk::consts::EPHEMERAL_VAULT_ID,
+                magic_program: ephemeral_rollups_sdk::consts::MAGIC_PROGRAM_ID,
+            },
+            bankroll::instruction::CloseTable {},
+        )
     }
     fn action(&mut self, seat: usize, data: impl InstructionData) -> Result<TransactionMetadata, FailedTransactionMetadata> {
         let signer = self.players[seat].insecure_clone();
@@ -211,9 +284,10 @@ impl Harness {
         let mut instruction = ix(
             bankroll::accounts::Settle {
                 table: self.table,
-                delegation_record: record(self.table),
-                table_token: ata(self.table),
-                table_eata: custody_address(self.table),
+                house: self.house,
+                delegation_record: record(self.house),
+                vault_token: ata(self.house),
+                vault_eata: custody_address(self.house),
                 treasury_token: ata(self.treasury),
                 treasury_eata: custody_address(self.treasury),
                 token_program: spl_token_interface::ID,
@@ -230,7 +304,7 @@ impl Harness {
     /// A refund with the seat's ATA writable, as clients send it when the account is live.
     fn refund_ix(&self, seat: u8) -> Instruction {
         let mut instruction = self.closed_refund_ix(seat);
-        instruction.accounts[3].is_writable = true;
+        instruction.accounts[4].is_writable = true;
         instruction
     }
     /// A refund with the seat's ATA read-only, as clients send it when the account is gone.
@@ -239,10 +313,11 @@ impl Harness {
         ix(
             bankroll::accounts::RefundPlayer {
                 table: self.table,
-                delegation_record: record(self.table),
-                table_token: ata(self.table),
+                house: self.house,
+                delegation_record: record(self.house),
+                vault_token: ata(self.house),
                 player_token: ata(wallet),
-                table_eata: custody_address(self.table),
+                vault_eata: custody_address(self.house),
                 player_custody_record: custody_record(wallet),
                 treasury_token: ata(self.treasury),
                 treasury_eata: custody_address(self.treasury),
@@ -275,9 +350,16 @@ impl Harness {
         self.svm.send_transaction(tx)
     }
     fn snapshot(&self) -> Vec<Vec<u8>> {
-        let mut keys = vec![self.table, ata(self.table), ata(self.treasury)];
+        let mut keys = vec![self.table, self.house, ata(self.house), ata(self.treasury)];
         keys.extend(self.players.iter().map(|player| ata(player.pubkey())));
         keys.iter().map(|key| self.svm.get_account(key).unwrap_or_default().data).collect()
+    }
+    /// The vault invariant: the house owes exactly what the tables hold, and the vault covers it.
+    fn assert_vault(&self, tables: &[Address]) {
+        let held: u64 = tables.iter().map(|table| self.read_at(*table).held).sum();
+        let liability = self.read_house().liability;
+        assert_eq!(liability, held, "liability is the sum of held");
+        assert!(balance(&self.svm, self.house) >= liability, "the vault covers the liability");
     }
     /// Opens a 3-player lobby with real entry transfers, then fixtures a started game with turn
     /// order equal to seat order (the start VRF request needs the live oracle).
@@ -328,15 +410,15 @@ fn open_table_takes_the_host_start_cash_with_the_target_moved_to_match() {
     let mut h = Harness::new();
     let host = h.players[0].insecure_clone();
     for (start_cash, target) in [(2000, 2500), (1200, 2700), (1500, 3000)] {
-        let open = h.enter(0, bankroll::instruction::OpenTable { name: "Host".into(), entry: USDC, max_players: 2, target, theme: 0, start_cash });
+        let open = h.open_ix(0, bankroll::instruction::OpenTable { name: "Host".into(), entry: USDC, max_players: 2, target, theme: 0, start_cash });
         assert!(h.send(&[&host], open).is_err(), "${start_cash} start with a ${target} target");
     }
-    assert_eq!(balance(&h.svm, h.table), 0, "a rejected open moves no entry");
-    let open = h.enter(0, bankroll::instruction::OpenTable { name: "Host".into(), entry: USDC, max_players: 2, target: 3000, theme: 0, start_cash: 2000 });
+    assert_eq!(balance(&h.svm, h.house), 0, "a rejected open moves no entry");
+    let open = h.open_ix(0, bankroll::instruction::OpenTable { name: "Host".into(), entry: USDC, max_players: 2, target: 3000, theme: 0, start_cash: 2000 });
     h.send(&[&host], open).unwrap();
     let table = h.read();
     assert_eq!((table.start_cash, table.target, table.phase), (2000, 3000, TablePhase::Lobby));
-    assert_eq!(balance(&h.svm, h.table), USDC);
+    assert_eq!((balance(&h.svm, h.house), table.held, h.read_house().liability), (USDC, USDC, USDC));
 }
 
 #[test]
@@ -347,8 +429,9 @@ fn zero_sol_players_open_join_and_settle_the_exact_three_player_split() {
     h.join(1, 1).unwrap();
     h.join(2, 1).unwrap();
     assert!(h.join(3, 1).is_err(), "table full");
-    assert_eq!(balance(&h.svm, h.table), 3 * USDC);
-    assert_eq!(h.read().game_nonce, 1);
+    assert_eq!(balance(&h.svm, h.house), 3 * USDC);
+    assert_eq!((h.read().held, h.read_house().liability), (3 * USDC, 3 * USDC));
+    assert_eq!(h.read().game_nonce, (INCARNATION << 32) + 1);
     for seat in 0..3 {
         assert_eq!(balance(&h.svm, h.wallet(seat)), 0);
         assert_eq!(h.svm.get_balance(&h.wallet(seat)).unwrap_or(0), 0, "players never hold lamports");
@@ -374,9 +457,9 @@ fn zero_sol_players_open_join_and_settle_the_exact_three_player_split() {
     assert_eq!(balance(&h.svm, h.wallet(0)), 900_000);
     assert_eq!(balance(&h.svm, h.wallet(1)), 0);
     assert_eq!(balance(&h.svm, h.treasury), 90_000);
-    assert_eq!(balance(&h.svm, h.table), 0);
+    assert_eq!(balance(&h.svm, h.house), 0);
     let table = h.read();
-    assert_eq!(table.phase, TablePhase::Free);
+    assert_eq!((table.phase, table.held, h.read_house().liability), (TablePhase::Free, 0, 0));
     assert_eq!([table.seats[0].payout, table.seats[1].payout, table.seats[2].payout], [900_000, 0, 2_010_000]);
     let before = h.snapshot();
     assert!(h.send(&[], settle).is_err(), "settle is single use");
@@ -384,14 +467,14 @@ fn zero_sol_players_open_join_and_settle_the_exact_three_player_split() {
 }
 
 #[test]
-fn four_seat_settle_with_ties_fits_and_sweeps_dust_and_strays_to_the_treasury() {
+fn four_seat_settle_with_ties_fits_and_sweeps_dust_but_not_vault_strays_to_the_treasury() {
     let mut h = Harness::new();
     h.playing(4, 7000);
-    let mut token = TokenAccount::unpack(&h.svm.get_account(&ata(h.table)).unwrap().data).unwrap();
+    let mut token = TokenAccount::unpack(&h.svm.get_account(&ata(h.house)).unwrap().data).unwrap();
     token.amount += 123;
     let mut data = vec![0; TokenAccount::LEN];
     TokenAccount::pack(token, &mut data).unwrap();
-    set_data(&mut h.svm, ata(h.table), spl_token_interface::ID, data);
+    set_data(&mut h.svm, ata(h.house), spl_token_interface::ID, data);
     h.finish(&[4000, 4000, 4000, 1000]);
     let settle = h.settle_ix();
     let result = h.send(&[], settle).unwrap();
@@ -401,8 +484,8 @@ fn four_seat_settle_with_ties_fits_and_sweeps_dust_and_strays_to_the_treasury() 
         assert_eq!(balance(&h.svm, h.wallet(seat)), 1_293_333);
     }
     assert_eq!(balance(&h.svm, h.wallet(3)), 0);
-    assert_eq!(balance(&h.svm, h.treasury), 4 * USDC + 123 - 3 * 1_293_333);
-    assert_eq!(balance(&h.svm, h.table), 0);
+    assert_eq!(balance(&h.svm, h.treasury), 4 * USDC - 3 * 1_293_333, "the fee and dust, never the vault's stray tokens");
+    assert_eq!((balance(&h.svm, h.house), h.read_house().liability), (123, 0), "a stray deposit stays in the vault");
 }
 
 #[test]
@@ -419,11 +502,15 @@ fn lobby_cancel_refunds_every_entry_exactly_once_and_frees_the_table() {
         assert!(h.send(&[], refund).is_err(), "double refund");
         assert_eq!(balance(&h.svm, h.wallet(seat as usize)), USDC);
     }
-    assert_eq!(balance(&h.svm, h.table), 0);
+    assert_eq!(balance(&h.svm, h.house), 0);
     assert_eq!(balance(&h.svm, h.treasury), 0);
-    assert_eq!(h.read().phase, TablePhase::Free);
+    assert_eq!((h.read().phase, h.read().held, h.read_house().liability), (TablePhase::Free, 0, 0));
 
+    // The host re-opens the same table in place; the next game's invite nonce moves on.
+    let host_wallet = h.wallet(0);
+    set_token(&mut h.svm, host_wallet, USDC_MINT, USDC, false);
     h.open(2, 2500);
+    assert_eq!(h.read().game_nonce, (INCARNATION << 32) + 2);
     h.clock(T0 + 600);
     h.action(1, bankroll::instruction::CancelOrExpire {}).unwrap();
     assert_eq!(h.read().phase, TablePhase::Refunding, "anyone may expire a stale lobby");
@@ -438,11 +525,11 @@ fn substituted_custody_recipient_treasury_or_mint_cannot_take_funds() {
     set_token(&mut h.svm, attacker, USDC_MINT, 0, false);
     let base = h.settle_ix();
     let mut cases = Vec::new();
-    for index in [2usize, 3, 4, 5, 7, 8] {
+    for index in [3usize, 4, 5, 6, 8, 9] {
         let mut instruction = base.clone();
         instruction.accounts[index].pubkey = match index {
-            2 | 4 | 7 => ata(attacker),
-            8 => custody_record(attacker),
+            3 | 5 | 8 => ata(attacker),
+            9 => custody_record(attacker),
             _ => custody_address(attacker),
         };
         cases.push(instruction);
@@ -467,11 +554,11 @@ fn substituted_custody_recipient_treasury_or_mint_cannot_take_funds() {
     h.write(&table);
     set_token(&mut h.svm, first, USDC_MINT, 0, false);
     let mut refund = h.refund_ix(0);
-    refund.accounts[3].pubkey = ata(attacker);
-    refund.accounts[5].pubkey = custody_record(attacker);
+    refund.accounts[4].pubkey = ata(attacker);
+    refund.accounts[6].pubkey = custody_record(attacker);
     let mut treasury = h.refund_ix(0);
-    treasury.accounts[6].pubkey = ata(attacker);
-    treasury.accounts[7].pubkey = custody_address(attacker);
+    treasury.accounts[7].pubkey = ata(attacker);
+    treasury.accounts[8].pubkey = custody_address(attacker);
     // Even after the refund grace, another wallet's accounts never count as the seat's.
     for now in [T0, T0 + 30 + REFUND_GRACE_SECONDS] {
         h.clock(now);
@@ -485,28 +572,36 @@ fn substituted_custody_recipient_treasury_or_mint_cannot_take_funds() {
 
 #[test]
 fn money_instructions_reject_base_clones_missing_records_and_foreign_custody() {
-    for case in 0..5 {
+    for case in 0..7 {
         let mut h = Harness::new();
-        let mut open = h.enter(0, bankroll::instruction::OpenTable { name: "Host".into(), entry: USDC, max_players: 2, target: 2500, theme: 0, start_cash: 1500 });
+        let mut open = h.open_ix(0, Harness::open_args(2, 2500));
         match case {
-            0 => h.svm.set_account(record(h.table), Account::default()).unwrap(),
+            0 => h.svm.set_account(record(h.house), Account::default()).unwrap(),
             1 => {
-                let mut account = h.svm.get_account(&record(h.table)).unwrap();
+                // A record delegating the house to another validator.
+                let mut account = h.svm.get_account(&record(h.house)).unwrap();
                 account.data[8..40].copy_from_slice(Address::new_unique().as_ref());
-                h.svm.set_account(record(h.table), account).unwrap();
+                h.svm.set_account(record(h.house), account).unwrap();
             }
             2 => {
-                // The base copy of a delegated table is DLP-owned.
-                let mut account = h.svm.get_account(&h.table).unwrap();
+                // The base copy of the delegated house is DLP-owned.
+                let mut account = h.svm.get_account(&h.house).unwrap();
                 account.owner = ephemeral_rollups_sdk::id();
-                h.svm.set_account(h.table, account).unwrap();
+                h.svm.set_account(h.house, account).unwrap();
             }
             3 => {
-                let mut account = h.svm.get_account(&custody_address(h.table)).unwrap();
+                let mut account = h.svm.get_account(&custody_address(h.house)).unwrap();
                 account.owner = ephemeral_rollups_sdk::id();
-                h.svm.set_account(custody_address(h.table), account).unwrap();
+                h.svm.set_account(custody_address(h.house), account).unwrap();
             }
-            _ => open.accounts[5].pubkey = custody_address(h.wallet(1)),
+            4 => open.accounts[6].pubkey = custody_address(h.wallet(1)),
+            5 => {
+                // A record at a forged address, live and pointing at the public validator.
+                let fake = Address::new_unique();
+                set_public_record(&mut h.svm, fake, bankroll::ID);
+                open.accounts[3].pubkey = record(fake);
+            }
+            _ => open.accounts[5].pubkey = ata(h.wallet(1)),
         }
         let before = h.snapshot();
         let host = h.players[0].insecure_clone();
@@ -540,28 +635,31 @@ fn spoofed_or_stale_vrf_callbacks_are_rejected_and_the_genuine_one_drives_play()
     assert!(h.send(&[&host], roll).is_err(), "the oracle queue must be VRF-owned on the ER");
     assert_eq!(before, h.snapshot());
 
-    // Fixture the state `roll` leaves behind: Rolling with request nonce 5.
+    // Fixture the state `roll` leaves behind: Rolling with this incarnation's request nonce 5.
+    let pending = (INCARNATION << 32) + 5;
     let mut table = h.read();
     table.stage = Stage::Rolling;
     table.vrf_purpose = VrfPurpose::Roll;
-    table.vrf_nonce = 5;
+    table.vrf_nonce = pending;
     h.write(&table);
     let before = h.snapshot();
     let attacker = Keypair::new().pubkey();
-    assert!(h.callback(attacker, die(1), 5).is_err(), "impostor identity");
+    assert!(h.callback(attacker, die(1), pending).is_err(), "impostor identity");
     let mut unsigned = ix(
         bankroll::accounts::ConsumeRandomness { vrf_program_identity: scoped_identity(), table: h.table },
-        bankroll::instruction::ConsumeRandomness { randomness: die(1), request_nonce: 5 },
+        bankroll::instruction::ConsumeRandomness { randomness: die(1), request_nonce: pending },
     );
     unsigned.accounts[0].is_signer = false;
     assert!(h.send(&[], unsigned).is_err(), "unsigned identity");
-    assert!(h.callback(scoped_identity(), die(1), 4).is_err(), "stale nonce");
+    assert!(h.callback(scoped_identity(), die(1), pending - 1).is_err(), "stale nonce");
+    // The previous incarnation at this address (closed, then re-created) used nonces below 1 << 32.
+    assert!(h.callback(scoped_identity(), die(1), 5).is_err(), "a callback from a closed incarnation");
     assert_eq!(before, h.snapshot());
 
-    h.callback(scoped_identity(), die(1), 5).unwrap();
+    h.callback(scoped_identity(), die(1), pending).unwrap();
     let table = h.read();
     assert_eq!((table.seats[0].position, table.stage, table.vrf_purpose), (1, Stage::BuyDecision, VrfPurpose::None));
-    assert!(h.callback(scoped_identity(), die(1), 5).is_err(), "replay");
+    assert!(h.callback(scoped_identity(), die(1), pending).is_err(), "replay");
     assert!(h.action(1, bankroll::instruction::Buy {}).is_err(), "not seat 1's decision");
     h.action(0, bankroll::instruction::Buy {}).unwrap();
     let table = h.read();
@@ -585,7 +683,7 @@ fn a_reused_table_carries_no_state_from_the_previous_game() {
     table.seats[1].strikes = 2;
     table.seats[2].eliminated_at = 1;
     table.elimination_seq = 1;
-    table.vrf_nonce = 9;
+    table.vrf_nonce = (INCARNATION << 32) + 9;
     table.last_roll = 6;
     table.trade.space = 12;
     h.write(&table);
@@ -597,17 +695,17 @@ fn a_reused_table_carries_no_state_from_the_previous_game() {
         set_token(&mut h.svm, wallet, USDC_MINT, USDC, false);
     }
     h.clock(T0 + 50);
-    let open = h.enter(3, bankroll::instruction::OpenTable { name: "Next".into(), entry: USDC, max_players: 2, target: 2500, theme: 0, start_cash: 1500 });
-    let host = h.players[3].insecure_clone();
+    let open = h.open_ix(0, bankroll::instruction::OpenTable { name: "Next".into(), entry: USDC, max_players: 2, target: 2500, theme: 0, start_cash: 1500 });
+    let host = h.players[0].insecure_clone();
     h.send(&[&host], open).unwrap();
     let table = h.read();
-    let mut expected = Table {
-        index: 7,
+    let mut expected = EphemeralTable {
         bump: table.bump,
-        game_nonce: 2,
-        vrf_nonce: 9,
+        game_nonce: (INCARNATION << 32) + 2,
+        vrf_nonce: (INCARNATION << 32) + 9,
         phase: TablePhase::Lobby,
-        host: h.wallet(3),
+        host: h.wallet(0),
+        held: USDC,
         entry: USDC,
         max_players: 2,
         target: 2500,
@@ -615,16 +713,17 @@ fn a_reused_table_carries_no_state_from_the_previous_game() {
         player_count: 1,
         lobby_deadline: T0 + 50 + 600,
         last_action_at: T0 + 50,
-        ..Table::default()
+        ..EphemeralTable::default()
     };
-    expected.seats[0].wallet = h.wallet(3);
+    expected.seats[0].wallet = h.wallet(0);
     expected.seats[0].name = *b"Next\0\0\0\0\0\0\0\0\0\0\0\0";
     assert_eq!(table, expected);
     assert!(table.board.iter().all(|lot| lot.owner == NO_OWNER && lot.buildings == 0));
     let account = h.svm.get_account(&h.table).unwrap();
-    assert!(account.data[8 + bankroll::Table::INIT_SPACE..].iter().all(|byte| *byte == 0), "reserved tail stays zero");
-    assert!(h.join(0, 1).is_err(), "the previous game's invite is stale");
-    h.join(0, 2).unwrap();
+    assert!(account.data[8 + bankroll::EphemeralTable::INIT_SPACE..].iter().all(|byte| *byte == 0), "reserved tail stays zero");
+    assert!(h.join(3, 1).is_err(), "the previous game's invite is stale");
+    h.join(3, 2).unwrap();
+    h.assert_vault(&[h.table]);
 }
 
 #[test]
@@ -657,7 +756,7 @@ fn emergency_refund_pays_ranked_shares_when_settle_keeps_failing() {
         assert!(h.send(&[], refund).is_err(), "double refund");
         assert_eq!(balance(&h.svm, h.wallet(seat as usize)), expected, "ranked share, never the entry");
     }
-    assert_eq!(balance(&h.svm, h.table), 0, "the last refund sweeps the fee out of custody");
+    assert_eq!(balance(&h.svm, h.house), 0, "the last refund sweeps the fee out of custody");
     assert_eq!(balance(&h.svm, h.treasury), 90_000);
     assert_eq!(h.read().phase, TablePhase::Free);
 }
@@ -674,7 +773,7 @@ fn a_losing_seat_cannot_block_settle_by_closing_its_token_accounts() {
     h.send(&[], settle).unwrap();
     assert_eq!(balance(&h.svm, h.wallet(0)), 1_940_000);
     assert_eq!(balance(&h.svm, h.treasury), 60_000);
-    assert_eq!(balance(&h.svm, h.table), 0);
+    assert_eq!(balance(&h.svm, h.house), 0);
     assert_eq!(h.read().phase, TablePhase::Free);
 }
 
@@ -770,7 +869,7 @@ fn bankruptcy_and_forfeit_rank_through_settle() {
         assert_eq!(balance(&h.svm, h.wallet(seat)), expected, "seat {seat}");
     }
     assert_eq!(balance(&h.svm, h.treasury), 120_000);
-    assert_eq!(balance(&h.svm, h.table), 0);
+    assert_eq!(balance(&h.svm, h.house), 0);
     assert_eq!(h.read().phase, TablePhase::Free);
 }
 
@@ -913,7 +1012,7 @@ fn a_closed_refund_account_cannot_keep_the_table_out_of_the_pool() {
     h.clock(T0 + REFUND_GRACE_SECONDS);
     h.send(&[], h.closed_refund_ix(1)).unwrap();
     assert_eq!((balance(&h.svm, h.wallet(0)), balance(&h.svm, h.wallet(2))), (USDC, USDC));
-    assert_eq!((balance(&h.svm, h.treasury), balance(&h.svm, h.table)), (USDC, 0));
+    assert_eq!((balance(&h.svm, h.treasury), balance(&h.svm, h.house)), (USDC, 0));
     assert_eq!(h.read().phase, TablePhase::Free);
 }
 
@@ -929,11 +1028,11 @@ fn settle_pays_the_live_seats_and_holds_an_undelegated_seats_share() {
     let second = h.wallet(1);
     close(&mut h.svm, custody_record(second));
     let mut settle = h.settle_ix();
-    settle.accounts[9].is_writable = false;
+    settle.accounts[10].is_writable = false;
     h.clock(T0 + 5);
     h.send(&[], settle).unwrap();
     assert_eq!(balance(&h.svm, h.wallet(0)), 2_010_000);
-    assert_eq!((balance(&h.svm, h.treasury), balance(&h.svm, h.table)), (90_000, 900_000));
+    assert_eq!((balance(&h.svm, h.treasury), balance(&h.svm, h.house)), (90_000, 900_000));
     let table = h.read();
     assert_eq!((table.phase, table.stage_deadline), (TablePhase::Refunding, T0 + 5 + REFUND_GRACE_SECONDS));
     assert_eq!(table.seats[..3].iter().map(|seat| (seat.payout, seat.refunded)).collect::<Vec<_>>(),
@@ -941,7 +1040,7 @@ fn settle_pays_the_live_seats_and_holds_an_undelegated_seats_share() {
     // The seat recreates its accounts and collects its ranked share before the grace ends.
     set_token(&mut h.svm, second, USDC_MINT, 0, false);
     h.send(&[], h.refund_ix(1)).unwrap();
-    assert_eq!((balance(&h.svm, second), balance(&h.svm, h.table)), (900_000, 0));
+    assert_eq!((balance(&h.svm, second), balance(&h.svm, h.house)), (900_000, 0));
     assert_eq!(h.read().phase, TablePhase::Free);
 }
 
@@ -974,5 +1073,158 @@ fn a_fresh_client_ends_ranks_and_settles_an_abandoned_game_in_one_transaction() 
     assert_eq!(table.phase, TablePhase::Free);
     assert!(table.seats[..3].iter().all(|seat| seat.strikes == 0 && seat.eliminated_at == 0), "nobody forfeited");
     assert_eq!([balance(&h.svm, h.wallet(0)), balance(&h.svm, h.wallet(1)), balance(&h.svm, h.wallet(2))], [0, 2_010_000, 900_000]);
-    assert_eq!((balance(&h.svm, h.treasury), balance(&h.svm, h.table)), (90_000, 0));
+    assert_eq!((balance(&h.svm, h.treasury), balance(&h.svm, h.house)), (90_000, 0));
+}
+
+/// Whether a failed transaction's logs carry this Anchor error name.
+fn failed_with(result: Result<TransactionMetadata, FailedTransactionMetadata>, error: &str) -> bool {
+    match result {
+        Ok(_) => false,
+        Err(failed) => failed.meta.logs.iter().any(|line| line.contains(&format!("Error Code: {error}."))),
+    }
+}
+
+/// Two hosts' tables share the vault. Neither can pay out more than it holds, even though the
+/// vault holds enough, and the house liability stays the sum of the two.
+#[test]
+fn two_tables_share_the_vault_and_neither_pays_out_the_others_money() {
+    let mut h = Harness::new();
+    let other = h.seed_table(2);
+    h.open(2, 2500);
+    h.join(1, 1).unwrap();
+    let open = h.open_ix(2, Harness::open_args(2, 2500));
+    let host = h.players[2].insecure_clone();
+    h.send(&[&host], open).unwrap();
+    let join = h.join_ix(3, other, (INCARNATION << 32) + 1);
+    let guest = h.players[3].insecure_clone();
+    h.send(&[&guest], join).unwrap();
+    h.assert_vault(&[h.table, other]);
+    assert_eq!((h.read().held, h.read_at(other).held, balance(&h.svm, h.house)), (2 * USDC, 2 * USDC, 4 * USDC));
+
+    // A refund larger than the table holds fails, though the vault holds the other table's money.
+    let mut table = h.read();
+    table.phase = TablePhase::Refunding;
+    table.ended_at = T0;
+    table.seats[0].payout = 3 * USDC;
+    h.write(&table);
+    let before = h.snapshot();
+    assert!(failed_with(h.send(&[], h.refund_ix(0)), "HeldExceeded"));
+    assert_eq!(before, h.snapshot());
+
+    // A table whose held falls short of its pot cannot settle.
+    h.finish(&[3000, 1000]);
+    let mut table = h.read();
+    table.held -= 1;
+    h.write(&table);
+    let before = h.snapshot();
+    assert!(failed_with(h.send(&[], h.settle_ix()), "CustodyShort"));
+    assert_eq!(before, h.snapshot());
+    table.held += 1;
+    h.write(&table);
+
+    // The first table settles from its own share; the other's is untouched.
+    h.send(&[], h.settle_ix()).unwrap();
+    assert_eq!((balance(&h.svm, h.wallet(0)), balance(&h.svm, h.treasury)), (1_940_000, 60_000));
+    assert_eq!((h.read().held, h.read_at(other).held, balance(&h.svm, h.house)), (0, 2 * USDC, 2 * USDC));
+    h.assert_vault(&[h.table, other]);
+}
+
+/// A signer can only open its own table, a table in a game cannot re-open, and accounts of the
+/// old `table_v2` pool are never accepted as tables.
+#[test]
+fn open_and_join_reject_other_hosts_busy_tables_and_old_pool_accounts() {
+    let mut h = Harness::new();
+    let intruder = h.players[1].insecure_clone();
+    let mut steal = h.open_ix(1, Harness::open_args(2, 2500));
+    steal.accounts[1].pubkey = h.table;
+    let before = h.snapshot();
+    assert!(failed_with(h.send(&[&intruder], steal), "ConstraintSeeds"), "another host's table");
+    assert_eq!(before, h.snapshot());
+
+    h.open(2, 2500);
+    let host_wallet = h.wallet(0);
+    set_token(&mut h.svm, host_wallet, USDC_MINT, USDC, false);
+    let host = h.players[0].insecure_clone();
+    let before = h.snapshot();
+    assert!(failed_with(h.send(&[&host], h.open_ix(0, Harness::open_args(2, 2500))), "InvalidPhase"), "the host's lobby is open");
+    assert_eq!(before, h.snapshot());
+
+    // A Free table still holding money never re-opens.
+    let mut table = h.read();
+    table.phase = TablePhase::Free;
+    h.write(&table);
+    assert!(failed_with(h.send(&[&host], h.open_ix(0, Harness::open_args(2, 2500))), "CustodyNotEmpty"));
+
+    // An old pool table: `table_v2` seeds and the old `Table` discriminator over the same fields.
+    let (old, _) = Address::find_program_address(&[b"table_v2", &0u16.to_le_bytes()], &bankroll::ID);
+    let mut data = solana_sha256_hasher::hashv(&[b"account:Table"]).to_bytes()[..8].to_vec();
+    data.extend_from_slice(&h.svm.get_account(&h.table).unwrap().data[8..]);
+    data.resize(1503, 0);
+    set_data(&mut h.svm, old, bankroll::ID, data);
+    let before = h.snapshot();
+    let guest = h.players[2].insecure_clone();
+    assert!(failed_with(h.send(&[&guest], h.join_ix(2, old, (INCARNATION << 32) + 1)), "AccountDiscriminatorMismatch"));
+    let action = ix(bankroll::accounts::TableAction { signer: h.wallet(0), table: old }, bankroll::instruction::CancelOrExpire {});
+    assert!(failed_with(h.send(&[&host], action), "AccountDiscriminatorMismatch"));
+    assert!(h.send(&[], h.close_ix(old)).is_err());
+    assert_eq!(before, h.snapshot());
+}
+
+/// A missing table is created only while the house can pay its rent and stay rent-exempt. LiteSVM
+/// has no magic program, so a funded create stops at the magic-program call.
+#[test]
+fn creating_a_table_needs_the_house_rent_and_reaches_the_magic_program() {
+    let mut h = Harness::new();
+    let host = h.players[1].insecure_clone();
+    assert!(h.svm.get_account(&table_address(h.wallet(1))).is_none_or(|account| account.data.is_empty()));
+    let rent = ephemeral_rollups_sdk::ephemeral_accounts::rent(TABLE_SPACE as u32);
+    let floor = h.svm.minimum_balance_for_rent_exemption(HOUSE_SPACE) + rent;
+    let mut account = h.svm.get_account(&h.house).unwrap();
+    account.lamports = floor - 1;
+    h.svm.set_account(h.house, account.clone()).unwrap();
+    let before = h.snapshot();
+    assert!(failed_with(h.send(&[&host], h.open_ix(1, Harness::open_args(2, 2500))), "HouseOutOfRent"));
+    assert_eq!(before, h.snapshot());
+
+    account.lamports = floor;
+    h.svm.set_account(h.house, account).unwrap();
+    let failed = h.send(&[&host], h.open_ix(1, Harness::open_args(2, 2500))).unwrap_err();
+    let logs = failed.meta.logs.join("\n");
+    assert!(!logs.contains("Error Code:") && logs.ends_with("failed: Unsupported program id"), "only the create CPI fails: {logs}");
+    assert_eq!(h.read_house().tables_created, INCARNATION + 1, "nothing was created");
+}
+
+/// `close_table` runs its checks before the magic-program call: only a Free table that holds
+/// nothing, at its canonical address, once the grace has passed.
+#[test]
+fn close_table_checks_phase_held_address_and_grace_first() {
+    let mut h = Harness::new();
+    h.open(2, 2500);
+    assert!(failed_with(h.send(&[], h.close_ix(h.table)), "InvalidPhase"), "a lobby");
+    h.join(1, 1).unwrap();
+    h.action(0, bankroll::instruction::CancelOrExpire {}).unwrap();
+    h.send(&[], h.refund_ix(0)).unwrap();
+    h.clock(T0 + 30);
+    h.send(&[], h.refund_ix(1)).unwrap();
+    let table = h.read();
+    assert_eq!((table.phase, table.held, table.freed_at), (TablePhase::Free, 0, T0 + 30));
+    h.assert_vault(&[h.table]);
+
+    h.clock(T0 + 30 + CLOSE_GRACE_SECONDS - 1);
+    assert!(failed_with(h.send(&[], h.close_ix(h.table)), "TooEarly"));
+    h.clock(T0 + 30 + CLOSE_GRACE_SECONDS);
+    let mut holding = table.clone();
+    holding.held = 1;
+    h.write(&holding);
+    assert!(failed_with(h.send(&[], h.close_ix(h.table)), "CustodyNotEmpty"));
+    h.write(&table);
+
+    // The same bytes at an address that is not the host's table PDA.
+    let forged = Address::new_unique();
+    h.write_at(forged, &table);
+    assert!(failed_with(h.send(&[], h.close_ix(forged)), "InvalidAccount"));
+
+    let failed = h.send(&[], h.close_ix(h.table)).unwrap_err();
+    let logs = failed.meta.logs.join("\n");
+    assert!(!logs.contains("Error Code:") && logs.ends_with("failed: Unsupported program id"), "only the close CPI fails: {logs}");
 }
