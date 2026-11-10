@@ -154,6 +154,31 @@ pub mod bankroll {
         Ok(())
     }
 
+    /// Base layer. SOL sent to a host's table address before the table exists makes the ER clone
+    /// a funded system account there, and the magic program then refuses to create the table, so
+    /// that wallet could never host. Anyone may sweep that SOL to themselves to clear the address.
+    pub fn unblock_table(ctx: Context<UnblockTable>, host: Pubkey) -> Result<()> {
+        let table = &ctx.accounts.table;
+        let lamports = table.lamports();
+        require!(
+            *table.owner == anchor_lang::system_program::ID && table.data_is_empty() && lamports > 0,
+            GameError::TableNotBlocked
+        );
+        let bump = [ctx.bumps.table];
+        let seeds: &[&[u8]] = &[TABLE_SEED, host.as_ref(), &bump];
+        anchor_lang::system_program::transfer(
+            CpiContext::new_with_signer(
+                ctx.accounts.system_program.key(),
+                anchor_lang::system_program::Transfer {
+                    from: table.to_account_info(),
+                    to: ctx.accounts.caller.to_account_info(),
+                },
+                &[seeds],
+            ),
+            lamports,
+        )
+    }
+
     pub fn cancel_or_expire(ctx: Context<TableAction>) -> Result<()> {
         ctx.accounts
             .table
@@ -610,6 +635,18 @@ pub struct CloseTable<'info> {
     /// CHECK: The magic program, which deletes the table.
     #[account(address = MAGIC_PROGRAM_ID)]
     pub magic_program: UncheckedAccount<'info>,
+}
+
+#[derive(Accounts)]
+#[instruction(host: Pubkey)]
+pub struct UnblockTable<'info> {
+    #[account(mut)]
+    pub caller: Signer<'info>,
+    /// CHECK: The host's table address while base shows it as a funded system account; the
+    /// handler checks the owner, data and lamports.
+    #[account(mut, seeds = [TABLE_SEED, host.as_ref()], bump)]
+    pub table: UncheckedAccount<'info>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]

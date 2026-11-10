@@ -1479,6 +1479,69 @@
       "args": []
     },
     {
+      "name": "unblock_table",
+      "docs": [
+        "Base layer. SOL sent to a host's table address before the table exists makes the ER clone",
+        "a funded system account there, and the magic program then refuses to create the table, so",
+        "that wallet could never host. Anyone may sweep that SOL to themselves to clear the address."
+      ],
+      "discriminator": [
+        183,
+        227,
+        169,
+        220,
+        219,
+        93,
+        110,
+        99
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "table",
+          "docs": [
+            "handler checks the owner, data and lamports."
+          ],
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  116,
+                  97,
+                  98,
+                  108,
+                  101,
+                  95,
+                  118,
+                  51
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "host"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "host",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
       "name": "withdraw_fees",
       "docs": [
         "ADMIN moves accrued fees from the treasury custody to its own canonical account on the ER,",
@@ -1725,6 +1788,11 @@
       "code": 6029,
       "name": "HouseOutOfRent",
       "msg": "The house cannot sponsor another table"
+    },
+    {
+      "code": 6030,
+      "name": "TableNotBlocked",
+      "msg": "Only SOL sent to an unused table address can be swept"
     }
   ],
   "types": [

@@ -270,4 +270,6 @@ pub enum GameError {
     HeldExceeded,
     #[msg("The house cannot sponsor another table")]
     HouseOutOfRent,
+    #[msg("Only SOL sent to an unused table address can be swept")]
+    TableNotBlocked,
 }

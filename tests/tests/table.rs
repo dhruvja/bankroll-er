@@ -1228,3 +1228,45 @@ fn close_table_checks_phase_held_address_and_grace_first() {
     let logs = failed.meta.logs.join("\n");
     assert!(!logs.contains("Error Code:") && logs.ends_with("failed: Unsupported program id"), "only the close CPI fails: {logs}");
 }
+
+/// Base layer: SOL sent to a host's table address before the table exists would block its creation
+/// on the ER. Anyone may sweep it to themselves; nothing else at a table address can be touched.
+#[test]
+fn unblock_table_sweeps_only_sol_sent_to_an_unused_table_address() {
+    let mut h = Harness::new();
+    let caller = Keypair::new();
+    h.svm.airdrop(&caller.pubkey(), 1_000_000_000).unwrap();
+    let unblock = |h: &mut Harness, table: Address, host: Address| {
+        let instruction = ix(
+            bankroll::accounts::UnblockTable { caller: caller.pubkey(), table, system_program: Address::default() },
+            bankroll::instruction::UnblockTable { host },
+        );
+        h.send(&[&caller], instruction)
+    };
+    let wallets: Vec<Address> = (0..4).map(|seat| h.wallet(seat)).collect();
+    let (host, live) = (wallets[1], h.table);
+    let blocked = table_address(host);
+    h.svm.set_account(blocked, Account { lamports: 1_000_000, data: vec![], owner: Address::default(), executable: false, rent_epoch: 0 }).unwrap();
+    let before = h.svm.get_balance(&caller.pubkey()).unwrap();
+
+    // A wrong host for the address, or a funded address that is not this host's table PDA.
+    let snapshot = h.snapshot();
+    assert!(failed_with(unblock(&mut h, blocked, wallets[2]), "ConstraintSeeds"), "the seeds name another host");
+    let stray = Address::new_unique();
+    h.svm.set_account(stray, Account { lamports: 1_000_000, data: vec![], owner: Address::default(), executable: false, rent_epoch: 0 }).unwrap();
+    assert!(failed_with(unblock(&mut h, stray, host), "ConstraintSeeds"), "not a table address");
+    // Seat 0's table is ours; a system account holding data; an empty address.
+    assert!(failed_with(unblock(&mut h, live, wallets[0]), "TableNotBlocked"), "a live table");
+    let with_data = table_address(wallets[2]);
+    set_data(&mut h.svm, with_data, Address::default(), vec![1]);
+    assert!(failed_with(unblock(&mut h, with_data, wallets[2]), "TableNotBlocked"), "a system account with data");
+    assert!(failed_with(unblock(&mut h, table_address(wallets[3]), wallets[3]), "TableNotBlocked"), "nothing to sweep");
+    assert_eq!(snapshot, h.snapshot());
+    assert_eq!(h.svm.get_balance(&blocked), Some(1_000_000));
+
+    unblock(&mut h, blocked, host).unwrap();
+    assert!(h.svm.get_account(&blocked).is_none_or(|account| account.lamports == 0), "the address is clear again");
+    // The harness payer pays the fee, so the caller receives every swept lamport.
+    assert_eq!(h.svm.get_balance(&caller.pubkey()).unwrap(), before + 1_000_000);
+    assert!(failed_with(unblock(&mut h, blocked, host), "TableNotBlocked"), "a second sweep finds nothing");
+}
