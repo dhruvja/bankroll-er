@@ -7,6 +7,7 @@
  * rent, liability and vault must return to where they started, every wallet's play balance must
  * move by exactly its payouts less its entries, and every wallet must still hold 0 SOL.
  * Wallets come from `.env` (CAPACITY_HOST_<n>, CAPACITY_JOINER_1) and are created there if missing.
+ * `--fund-only` stops after funding them (it never touches the house, so it can run beside a smoke).
  */
 import { Keypair, PublicKey } from '@solana/web3.js';
 import { DEMO_ENTRY, invariant } from '../shared/config';
@@ -33,6 +34,12 @@ const adminBefore = { lamports: await client.base.getBalance(admin.publicKey), u
 const fundingStart = Date.now();
 await fundPlayers(wallets, admin, payments, [...hosts.map(() => entryAtoms), entryAtoms * BigInt(count)], base, 6);
 const fundingMs = Date.now() - fundingStart;
+if (args.has('fund-only')) {
+  console.log(saveArtifact('capacity-funding.json', { at: new Date().toISOString(), wallets: wallets.map(wallet => wallet.publicKey.toBase58()), fundingMs, base,
+    payments: paymentSignatures, admin: { lamportsSpent: adminBefore.lamports - await client.base.getBalance(admin.publicKey),
+      usdcSpent: adminBefore.usdc - (await client.walletBalances(admin.publicKey)).base } }));
+  process.exit(0);
+}
 for (const table of tables) invariant(!(await client.er.getAccountInfo(table)), `${table.toBase58()} already exists; wait for its close grace and close it first.`);
 
 const ledger = async () => {
