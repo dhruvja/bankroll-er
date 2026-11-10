@@ -1,7 +1,10 @@
 {
   "programId": "72xAdhJ15tqVXZ95oKKxBYfEbJpJsDThcMCwwtonibEq",
   "validator": "MAS1Dt9qreoRMQ14YQuhg8UTZMMzDdKhmkZMECCzk57",
-  "tables": 4,
+  "house": "EofEPSx3aWpWPmiVXk5XpVPVtgLQUQZMnap2qsk1qPR1",
+  "vault": "GXcGHKkQvhotbDPTN93EAXvnp35bzkc8UiHJ3jP6sNz9",
+  "vaultEata": "AT926jwc73wtx6zmKf7pf5tYZjNCTKgkpv4yXdtT2LmH",
   "treasury": "7zusvbhEnoduAhm4WTXytt8w7XKs4bS21A5ZjrakvVQD",
-  "bootstrappedAt": "2026-11-03T13:38:03.758Z"
+  "houseLamports": 101102360,
+  "setupAt": "2026-11-10T09:47:26.798Z"
 }
