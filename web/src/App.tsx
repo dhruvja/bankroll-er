@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { PublicKey, type Keypair } from '@solana/web3.js';
-import { defaultTarget } from '../../shared/board';
+import { board, defaultTarget } from '../../shared/board';
 import { DEMO_ENTRY, PAID_ENTRIES, PROTOCOL_FEE_BPS, RELAY_FEE, SHARES_BPS, WITHDRAW_MINIMUM } from '../../shared/config';
 import type { TableView } from '../../shared/chain';
 import { client, deposit, getWalletInfo, joinTable, listLobbies, openTable, wallet, withdraw, type WalletInfo } from './lib/game';
@@ -183,7 +183,7 @@ function QuickPlay({ demo, info, refresh, openWallet }: { demo: boolean; info?: 
         return;
       } catch { /* Filled or closed since we read it: try the next one. */ }
     }
-    const opened = await openTable({ name: trimmed, entry, maxPlayers: players, target: defaultTarget(players), theme: 0 });
+    const opened = await openTable({ name: trimmed, entry, maxPlayers: players, target: defaultTarget(players), theme: 0, startCash: board.rules.startCash });
     if (!demo) refresh();
     navigate(`${prefix}/play/${opened.table}/${opened.nonce}`);
   });
@@ -205,13 +205,13 @@ function QuickPlay({ demo, info, refresh, openWallet }: { demo: boolean; info?: 
 
 function OpenTableForm({ demo, info, refresh, openWallet }: { demo: boolean; info?: WalletInfo; refresh: () => void; openWallet: () => void }) {
   const { busy, error, run } = useBusy();
-  const [name, setName] = useState(savedName), [players, setPlayers] = useState(2), [theme, setTheme] = useState(0), [paidEntry, setPaidEntry] = useState<number>(PAID_ENTRIES[0]);
+  const [name, setName] = useState(savedName), [players, setPlayers] = useState(2), [theme, setTheme] = useState(0), [startCash, setStartCash] = useState(board.rules.startCash), [paidEntry, setPaidEntry] = useState<number>(PAID_ENTRIES[0]);
   const entry = demo ? DEMO_ENTRY : paidEntry;
   const submit = (event: FormEvent) => {
     event.preventDefault();
     void run(async () => {
       saveName(name.trim());
-      const opened = await openTable({ name: name.trim(), entry, maxPlayers: players, target: defaultTarget(players), theme });
+      const opened = await openTable({ name: name.trim(), entry, maxPlayers: players, target: defaultTarget(players, startCash), theme, startCash });
       if (!demo) refresh();
       navigate(`${demo ? '/demo' : ''}/play/${opened.table}/${opened.nonce}`);
     });
@@ -227,7 +227,10 @@ function OpenTableForm({ demo, info, refresh, openWallet }: { demo: boolean; inf
       <fieldset><legend>Players</legend><div className="segmented">{[2, 3, 4].map(count => (
         <label key={count} className={players === count ? 'on' : ''}><input type="radio" name="players" data-testid={`open-players-${count}`} checked={players === count}
           onChange={() => setPlayers(count)} />{count}</label>))}</div></fieldset>
-      <p className="quiet">First to {money(defaultTarget(players))} net worth wins. {demo ? 'You get an invite link to share once the table is open.' : 'Opening pays your entry. A lobby that never starts refunds everyone in full.'}</p>
+      <fieldset><legend>Starting money</legend><div className="segmented">{board.rules.startCashOptions.map(value => (
+        <label key={value} className={startCash === value ? 'on' : ''}><input type="radio" name="start-cash" data-testid={`open-start-${value}`} checked={startCash === value}
+          onChange={() => setStartCash(value)} />{money(value)}</label>))}</div></fieldset>
+      <p className="quiet">Everyone starts with {money(startCash)}; first to {money(defaultTarget(players, startCash))} net worth wins. {demo ? 'You get an invite link to share once the table is open.' : 'Opening pays your entry. A lobby that never starts refunds everyone in full.'}</p>
       <button className="btn primary" data-testid="open-submit" disabled={busy}>{busy ? 'Opening…' : demo ? 'Open table' : `Open table for ${usdc(entry)} USDC`}</button>
       {short && <p className="quiet">Your play balance is short, so this first moves USDC in from your wallet (0.20 USDC fee, no SOL). <button type="button" className="linkish" onClick={openWallet}>Open wallet</button></p>}
       {error && <p className="error" data-testid="error">{error}</p>}

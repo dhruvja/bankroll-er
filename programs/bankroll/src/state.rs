@@ -24,8 +24,9 @@ pub const SHARES_BPS: [[u64; 3]; 3] = [[9700, 0, 0], [6700, 3000, 0], [6000, 270
 pub const ENTRIES: [u64; 3] = [1_000, 1_000_000, 5_000_000];
 /// Zero bytes allocated after the serialized Table. Later phases append fields here without
 /// changing the account size; old accounts read the new fields as zero.
-/// 1023 since `theme` took one byte, so TABLE_SPACE (and every live account) stays the same size.
-pub const TABLE_RESERVED: usize = 1023;
+/// 1023 since `theme` took one byte and 1015 since `start_cash` took eight, so TABLE_SPACE (and
+/// every live account) stays the same size.
+pub const TABLE_RESERVED: usize = 1015;
 pub const TABLE_SPACE: usize = 8 + Table::INIT_SPACE + TABLE_RESERVED;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -108,6 +109,10 @@ pub struct Table {
     pub trade: Trade,
     /// The host's board theme for this game, below `BOARD_THEMES`. Display only.
     pub theme: u8,
+    /// The host's pick from `START_CASH_OPTIONS`: every seat's cash before the turn-order bonus.
+    /// `target` is a `TARGETS` value moved by the same amount. Zero on a lobby opened before this
+    /// field existed, which plays as `START_CASH`.
+    pub start_cash: u64,
 }
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Copy, Default, Debug, PartialEq, InitSpace)]
@@ -184,7 +189,7 @@ pub enum VrfPurpose {
 pub enum GameError {
     #[msg("Entry must be 0.001, 1, or 5 devnet USDC")]
     InvalidEntry,
-    #[msg("Players must be 2-4, the target 2500, 5000 or 7000, and the theme 0-2")]
+    #[msg("Players must be 2-4, start cash 1000, 1500 or 2000, the target 2500, 5000 or 7000 moved by start cash - 1500, and the theme 0-2")]
     InvalidConfig,
     #[msg("Name must contain 1 to 16 UTF-8 bytes")]
     InvalidName,

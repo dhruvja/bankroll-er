@@ -22,7 +22,7 @@ fn wallets() -> [Pubkey; MAX_SEATS] {
 fn lobby(players: usize, target: u64) -> Table {
     let w = wallets();
     let mut table = Table { index: 3, bump: 250, ..Table::default() };
-    table.open(w[0], name("host"), USDC, MAX_SEATS as u8, target, 0, T0).unwrap();
+    table.open(w[0], name("host"), USDC, MAX_SEATS as u8, target, 0, 1500, T0).unwrap();
     for (i, wallet) in w.iter().enumerate().take(players).skip(1) {
         table.join(*wallet, name(&format!("p{i}")), table.game_nonce, T0).unwrap();
     }
@@ -49,15 +49,22 @@ fn roll(table: &mut Table, value: u8, now: i64) {
 fn lobby_validates_config_nonce_capacity_and_refunds_free_the_table() {
     let w = wallets();
     let mut free = Table::default();
-    assert!(free.open(w[0], name("h"), 2 * USDC, 3, 2500, 0, T0).is_err());
-    assert!(free.open(w[0], name("h"), USDC, 5, 2500, 0, T0).is_err());
-    assert!(free.open(w[0], name("h"), USDC, 1, 2500, 0, T0).is_err());
-    assert!(free.open(w[0], name("h"), USDC, 3, 4000, 0, T0).is_err());
-    assert!(free.open(w[0], name("h"), USDC, 3, 2500, BOARD_THEMES, T0).is_err(), "unknown board theme");
+    assert!(free.open(w[0], name("h"), 2 * USDC, 3, 2500, 0, 1500, T0).is_err());
+    assert!(free.open(w[0], name("h"), USDC, 5, 2500, 0, 1500, T0).is_err());
+    assert!(free.open(w[0], name("h"), USDC, 1, 2500, 0, 1500, T0).is_err());
+    assert!(free.open(w[0], name("h"), USDC, 3, 4000, 0, 1500, T0).is_err());
+    assert!(free.open(w[0], name("h"), USDC, 3, 2500, BOARD_THEMES, 1500, T0).is_err(), "unknown board theme");
+    // Start cash is one of the three options, and the target is a standard one moved by the same amount.
+    assert!(free.open(w[0], name("h"), USDC, 3, 2500, 0, 1200, T0).is_err(), "start cash off the list");
+    assert!(free.open(w[0], name("h"), USDC, 3, 2500, 0, 0, T0).is_err(), "zero start cash");
+    assert!(free.open(w[0], name("h"), USDC, 3, 2500, 0, 2000, T0).is_err(), "$2,000 start keeps the $1,500 target");
+    assert!(free.open(w[0], name("h"), USDC, 3, 3000, 0, 1500, T0).is_err(), "moved target without the start cash");
+    assert!(free.open(w[0], name("h"), USDC, 3, 400, 0, 2000, T0).is_err(), "target below the start difference");
+    assert!(free.open(w[0], name("h"), USDC, 3, u64::MAX, 0, 1000, T0).is_err(), "target overflow");
     assert!(encode_name("  ").is_err());
     assert!(encode_name("seventeen bytes!!").is_err());
-    free.open(w[0], name("h"), USDC, 2, 2500, 0, T0).unwrap();
-    assert!(free.open(w[1], name("x"), USDC, 2, 2500, 0, T0).is_err());
+    free.open(w[0], name("h"), USDC, 2, 2500, 0, 1500, T0).unwrap();
+    assert!(free.open(w[1], name("x"), USDC, 2, 2500, 0, 1500, T0).is_err());
     assert!(free.join(w[0], name("dup"), 1, T0).is_err());
     assert!(free.join(w[1], name("stale"), 0, T0).is_err());
     assert!(free.start(w[0], T0).is_err(), "one player cannot start");
@@ -99,6 +106,36 @@ fn turn_order_is_a_permutation_with_the_seat_bonus_for_each_target() {
             assert_eq!(table.stage_deadline, T0 + 1 + PREROLL_SECONDS);
             assert_eq!(table.vrf_purpose, VrfPurpose::None);
         }
+    }
+}
+
+#[test]
+fn start_cash_sets_every_seat_and_moves_the_target() {
+    let w = wallets();
+    for (start, target, step) in [(1000, 2000, 40), (1000, 6500, 100), (2000, 3000, 40), (2000, 5500, 75), (2000, 7500, 100)] {
+        let mut table = Table::default();
+        table.open(w[0], name("host"), USDC, MAX_SEATS as u8, target, 0, start, T0).unwrap();
+        assert_eq!((table.start_cash, table.target), (start, target));
+        for (i, wallet) in w.iter().enumerate().skip(1) {
+            table.join(*wallet, name(&format!("p{i}")), table.game_nonce, T0).unwrap();
+        }
+        table.start(w[0], T0).unwrap();
+        table.consume_randomness([5; 32], table.vrf_nonce, T0 + 1).unwrap();
+        for (place, seat) in table.order.iter().enumerate() {
+            assert_eq!(table.seats[*seat as usize].cash, start as i64 + step * place as i64, "${start} start, ${target} target");
+        }
+    }
+}
+
+#[test]
+fn a_lobby_opened_before_start_cash_existed_plays_the_standard_start() {
+    // The field reads 0 on such a lobby; its target is a standard one.
+    let mut table = lobby(4, 5000);
+    table.start_cash = 0;
+    table.start(wallets()[0], T0).unwrap();
+    table.consume_randomness([3; 32], table.vrf_nonce, T0 + 1).unwrap();
+    for (place, seat) in table.order.iter().enumerate() {
+        assert_eq!(table.seats[*seat as usize].cash, 1500 + 75 * place as i64);
     }
 }
 
@@ -499,7 +536,7 @@ fn open_resets_every_game_field_but_keeps_identity_and_nonces() {
     assert_eq!(table.phase, TablePhase::Free);
     let (game_nonce, vrf_nonce) = (table.game_nonce, table.vrf_nonce);
     let host = Pubkey::new_unique();
-    table.open(host, name("next"), 5 * USDC, 2, 2500, 0, T0 + 9_000).unwrap();
+    table.open(host, name("next"), 5 * USDC, 2, 2500, 0, 1500, T0 + 9_000).unwrap();
     let mut fresh = Table {
         index: 3,
         bump: 250,
@@ -510,6 +547,7 @@ fn open_resets_every_game_field_but_keeps_identity_and_nonces() {
         entry: 5 * USDC,
         max_players: 2,
         target: 2500,
+        start_cash: 1500,
         player_count: 1,
         lobby_deadline: T0 + 9_000 + LOBBY_SECONDS,
         last_action_at: T0 + 9_000,
@@ -575,7 +613,7 @@ fn ranked_payouts_cover_every_order_and_tie_for_two_three_and_four_seats() {
 fn a_tenth_of_a_cent_entry_opens_and_pays_out_without_losing_the_fee() {
     let w = wallets();
     let mut free = Table::default();
-    free.open(w[0], name("h"), ENTRIES[0], 2, 2500, 0, T0).unwrap();
+    free.open(w[0], name("h"), ENTRIES[0], 2, 2500, 0, 1500, T0).unwrap();
     assert_eq!(free.entry, 1_000);
     for (nets, eliminated, expected) in [
         (&[3000i64, 2000][..], &[0u8, 0][..], [1_940, 0, 0, 0]),
@@ -1228,7 +1266,7 @@ fn open_records_the_board_theme() {
     let w = wallets();
     for theme in 0..BOARD_THEMES {
         let mut table = Table::default();
-        table.open(w[0], name("h"), USDC, 2, 2500, theme, T0).unwrap();
+        table.open(w[0], name("h"), USDC, 2, 2500, theme, 1500, T0).unwrap();
         assert_eq!(table.theme, theme);
     }
 }

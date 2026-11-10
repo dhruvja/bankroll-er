@@ -24,6 +24,8 @@ pub const SPACES: usize = ${source.spaces.length};
 pub const PUBLIC_GROUP: u8 = ${GROUPS.indexOf('Public') + 1};
 pub const GROUP_SIZES: [u8; ${groupSizes.length}] = [${groupSizes.join(', ')}];
 pub const START_CASH: i64 = ${rules.startCash};
+/// The host's start-cash choices; a table's target is a TARGETS value moved by (start cash - START_CASH).
+pub const START_CASH_OPTIONS: [u64; ${rules.startCashOptions.length}] = [${rules.startCashOptions.join(', ')}];
 pub const SALARY: i64 = ${rules.salary};
 pub const BANKRUPT_CASH_BELOW: i64 = ${rules.bankruptCashBelow};
 pub const MAX_ROLLS_PER_TURN: u8 = ${rules.maxRollsPerTurn};

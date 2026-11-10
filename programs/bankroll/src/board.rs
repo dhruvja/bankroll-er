@@ -5,6 +5,8 @@ pub const SPACES: usize = 28;
 pub const PUBLIC_GROUP: u8 = 9;
 pub const GROUP_SIZES: [u8; 10] = [0, 2, 3, 2, 3, 2, 3, 2, 3, 4];
 pub const START_CASH: i64 = 1500;
+/// The host's start-cash choices; a table's target is a TARGETS value moved by (start cash - START_CASH).
+pub const START_CASH_OPTIONS: [u64; 3] = [1000, 1500, 2000];
 pub const SALARY: i64 = 200;
 pub const BANKRUPT_CASH_BELOW: i64 = -500;
 pub const MAX_ROLLS_PER_TURN: u8 = 3;

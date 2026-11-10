@@ -80,7 +80,7 @@ async function fundEntry(owner: Keypair, entry: number) {
   });
 }
 
-export async function openTable(options: { name: string; entry: number; maxPlayers: number; target: number; theme: number }) {
+export async function openTable(options: { name: string; entry: number; maxPlayers: number; target: number; theme: number; startCash: number }) {
   const host = await wallet();
   await fundEntry(host, options.entry);
   for (const table of await client.findFreeTables()) {

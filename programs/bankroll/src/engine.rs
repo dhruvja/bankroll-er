@@ -16,6 +16,14 @@ pub fn encode_name(name: &str) -> Result<[u8; NAME_LEN]> {
     Ok(bytes)
 }
 
+/// The standard target (a `TARGETS` value) behind a table's target: the table's target is moved by
+/// the host's start cash minus `START_CASH`, so games run about as long at every start. None when
+/// the pair matches no standard target.
+pub fn base_target(target: u64, start_cash: u64) -> Option<u64> {
+    let base = target.checked_add(START_CASH as u64)?.checked_sub(start_cash)?;
+    TARGETS.contains(&base).then_some(base)
+}
+
 fn word(bytes: &[u8]) -> u64 {
     let mut word = [0u8; 8];
     word.copy_from_slice(&bytes[..8]);
@@ -101,13 +109,15 @@ impl Table {
         max_players: u8,
         target: u64,
         theme: u8,
+        start_cash: u64,
         now: i64,
     ) -> Result<()> {
         require!(self.phase == TablePhase::Free, GameError::InvalidPhase);
         require!(ENTRIES.contains(&entry), GameError::InvalidEntry);
         require!(
             (2..=MAX_SEATS as u8).contains(&max_players)
-                && TARGETS.contains(&target)
+                && START_CASH_OPTIONS.contains(&start_cash)
+                && base_target(target, start_cash).is_some()
                 && theme < BOARD_THEMES,
             GameError::InvalidConfig
         );
@@ -125,6 +135,7 @@ impl Table {
             max_players,
             target,
             theme,
+            start_cash,
             player_count: 1,
             lobby_deadline: now.checked_add(LOBBY_SECONDS).ok_or(GameError::Overflow)?,
             last_action_at: now,
@@ -291,10 +302,17 @@ impl Table {
         );
         let n = self.count();
         if self.vrf_purpose == VrfPurpose::Order {
+            // A lobby opened before `start_cash` existed reads 0 and plays the standard start.
+            let start_cash = match self.start_cash {
+                0 => START_CASH as u64,
+                cash => cash,
+            };
+            let base = base_target(self.target, start_cash).ok_or(GameError::InvalidConfig)?;
             let step_index = TARGETS
                 .iter()
-                .position(|target| *target == self.target)
+                .position(|target| *target == base)
                 .ok_or(GameError::InvalidConfig)?;
+            let start_cash = i64::try_from(start_cash).map_err(|_| GameError::Overflow)?;
             let mut order = [0u8, 1, 2, 3];
             for i in (1..n).rev() {
                 let hash = solana_sha256_hasher::hashv(&[b"order", &randomness, &[i as u8]]);
@@ -303,7 +321,7 @@ impl Table {
             }
             for (place, &seat) in order[..n].iter().enumerate() {
                 self.seats[seat as usize].cash =
-                    START_CASH + SEAT_BONUS_STEPS[step_index] * place as i64;
+                    start_cash + SEAT_BONUS_STEPS[step_index] * place as i64;
             }
             self.vrf_purpose = VrfPurpose::None;
             self.order = order;

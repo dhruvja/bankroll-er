@@ -15,7 +15,7 @@ export function Rules({ demo }: { demo: boolean }) {
       <ul>
         <li>Roll the die and move. A 6 rolls again, up to {rules.maxRollsPerTurn} times a turn. Passing Start pays {money(rules.salary)}.</li>
         <li>You get {rules.deadlinesSec.preRoll} seconds to roll. Time out {rules.strikesToForfeit} times and you are out.</li>
-        <li>Everyone starts with {money(rules.startCash)}. Later turns in the order start with a little more.</li>
+        <li>Everyone starts with {money(rules.startCash)}, or {rules.startCashOptions.filter(value => value !== rules.startCash).map(money).join(' or ')} if the host picks it; the target then moves by the same amount. Later turns in the order start with a little more.</li>
       </ul>
       <h3>Properties</h3>
       <ul>

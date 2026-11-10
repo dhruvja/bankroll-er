@@ -21,7 +21,11 @@ const root = resolve(import.meta.dirname, '../..');
 test('the shared board is the frozen phase 01 economy and board.rs is generated from it', () => {
   assert.equal(createHash('sha256').update(readFileSync(resolve(root, 'shared/board.json'))).digest('hex'), BOARD_SHA256);
   assert.equal(readFileSync(BOARD_RS, 'utf8'), renderBoardRs(board));
-  assert.deepEqual([2, 3, 4].map(defaultTarget), [2500, 5000, 7000]);
+  assert.deepEqual([2, 3, 4].map(players => defaultTarget(players)), [2500, 5000, 7000]);
+  // Each start-cash option moves every target by the same amount as the start.
+  assert.deepEqual(board.rules.startCashOptions, [1000, 1500, 2000]);
+  assert.deepEqual([2, 3, 4].map(players => defaultTarget(players, 1000)), [2000, 4500, 6500]);
+  assert.deepEqual([2, 3, 4].map(players => defaultTarget(players, 2000)), [3000, 5500, 7500]);
 });
 
 function encodedTable(overrides: Record<string, unknown> = {}) {
@@ -35,7 +39,7 @@ function encodedTable(overrides: Record<string, unknown> = {}) {
     stage_deadline: zero, turn: 0, order: [2, 0, 1, 3], round: 4, rolls_this_turn: 0, extra_roll: false, vrf_purpose: { None: {} },
     vrf_requested_at: zero, last_roll: 6, last_card: 0, elimination_seq: 0, ended_at: new BN(1200),
     seats: [0, 1, 2, 3].map(seat), board: Array.from({ length: 28 }, () => ({ owner: NO_OWNER, buildings: 0 })),
-    trade: { space: 0, offers: [0, 0, 0, 0], deadline: zero }, ...overrides,
+    trade: { space: 0, offers: [0, 0, 0, 0], deadline: zero }, theme: 0, start_cash: new BN(2000), ...overrides,
   };
   return { raw, wallets };
 }
@@ -55,6 +59,8 @@ test('a Table account decodes with its phase at byte 11 and rejects a non-canoni
   assert.equal(view.seats.length, 3);
   assert.equal(view.seats[1].name, 'P1');
   assert.throws(() => decodeTable(tableAddress(6), data), /canonical/);
+  assert.equal(view.startCash, 2000);
+  assert.equal((await decoded({ start_cash: new BN(0) })).startCash, 1500, 'a lobby from before the field plays the standard start');
 });
 
 test('expectedPayouts mirrors the program for ranks, ties, eliminations and dust', async () => {
@@ -83,7 +89,7 @@ test('expectedPayouts mirrors the program for ranks, ties, eliminations and dust
 
 test('the IDL builder orders accounts and flags signers, and settle appends each seat pair', async () => {
   const actor = Keypair.generate().publicKey, table = tableAddress(2);
-  const open = buildInstruction('open_table', accountsFor(table, actor), { name: 'Host', entry: new BN(1_000_000), max_players: 3, target: new BN(3000), theme: 0 });
+  const open = buildInstruction('open_table', accountsFor(table, actor), { name: 'Host', entry: new BN(1_000_000), max_players: 3, target: new BN(3000), theme: 0, start_cash: new BN(2000) });
   assert.ok(open.programId.equals(PROGRAM_ID));
   assert.deepEqual(open.keys.map(key => key.pubkey.toBase58()), [actor, table, open.keys[2].pubkey, tokenAddress(actor), tokenAddress(table),
     custodyAddress(table), custodyAddress(actor), open.keys[7].pubkey].map(key => key.toBase58()));

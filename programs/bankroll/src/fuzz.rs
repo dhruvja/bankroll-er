@@ -183,6 +183,7 @@ fn assert_fresh(table: &Table, index: u16, bump: u8, game_nonce: u64, vrf_nonce:
     fresh.entry = table.entry;
     fresh.max_players = table.max_players;
     fresh.target = table.target;
+    fresh.start_cash = table.start_cash;
     fresh.player_count = 1;
     fresh.lobby_deadline = table.lobby_deadline;
     fresh.last_action_at = table.last_action_at;
@@ -196,7 +197,7 @@ fn seat_players(table: &mut Table, rng: &mut Rng, players: usize, max_players: u
     let wallets: Vec<Pubkey> = (0..players).map(|_| rng.wallet()).collect();
     let (index, bump, game_nonce, vrf_nonce) = (table.index, table.bump, table.game_nonce, table.vrf_nonce);
     let host_name = encode_name("host").unwrap();
-    table.open(wallets[0], host_name, entry, max_players, target, 0, now).unwrap();
+    table.open(wallets[0], host_name, entry, max_players, target, 0, START_CASH as u64, now).unwrap();
     assert_fresh(table, index, bump, game_nonce + 1, vrf_nonce, wallets[0], host_name);
     for wallet in &wallets[1..] {
         table.join(*wallet, encode_name("guest").unwrap(), table.game_nonce, now).unwrap();

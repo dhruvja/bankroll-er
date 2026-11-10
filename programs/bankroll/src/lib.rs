@@ -59,6 +59,7 @@ pub mod bankroll {
         max_players: u8,
         target: u64,
         theme: u8,
+        start_cash: u64,
     ) -> Result<()> {
         require_public_er(&ctx.accounts.delegation_record)?;
         let now = Clock::get()?.unix_timestamp;
@@ -70,6 +71,7 @@ pub mod bankroll {
             max_players,
             target,
             theme,
+            start_cash,
             now,
         )?;
         pay_entry(accounts)

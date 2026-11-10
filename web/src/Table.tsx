@@ -246,7 +246,7 @@ export function TableScreen({ demo, table, nonce, me, signer, refresh, openWalle
         <a className="head-home" href={home} onClick={event => { event.preventDefault(); navigate(home); }} aria-label="Back to the tables">←</a>
         <div className="head-title">
           <h1>Table {view.index + 1}</h1>
-          <p>{demo ? '' : `${usdc(view.entry)} USDC entry, ${usdc(view.entry * view.playerCount)} pot, `}{THEMES[view.theme]?.name ?? 'Classic'} board, first to {money(view.target)} net worth</p>
+          <p>{demo ? '' : `${usdc(view.entry)} USDC entry, ${usdc(view.entry * view.playerCount)} pot, `}{THEMES[view.theme]?.name ?? 'Classic'} board, {money(view.startCash)} start, first to {money(view.target)} net worth</p>
         </div>
         <SoundToggle />
         <span className={`link-state${connected ? '' : ' offline'}`} data-testid="connection">{connected ? 'Live' : 'Reconnecting…'}</span>

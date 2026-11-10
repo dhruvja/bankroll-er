@@ -58,6 +58,7 @@ interface RawTable {
   seats: RawSeat[]; board: { owner: number; buildings: number }[];
   trade: { space: number; offers: number[]; deadline: BN };
   theme: number;
+  start_cash: BN;
 }
 
 export interface SeatView {
@@ -78,6 +79,8 @@ export interface TableView {
   trade: { space: number; offers: number[]; deadline: number };
   /** Board theme the host picked: an index into `THEMES` (names only, rules are shared). */
   theme: number;
+  /** The host's starting money; `target` is a standard target moved by the same amount. */
+  startCash: number;
 }
 
 const variant = (value: Record<string, unknown>) => Object.keys(value)[0].replaceAll('_', '').toLowerCase();
@@ -103,6 +106,8 @@ export function decodeTable(address: PublicKey, data: Buffer): TableView {
     board: raw.board.map(lot => ({ owner: lot.owner, buildings: lot.buildings })),
     trade: { space: raw.trade.space, offers: raw.trade.offers.slice(0, count), deadline: raw.trade.deadline.toNumber() },
     theme: raw.theme,
+    // Zero on a lobby opened before the field existed, which the program plays as the standard start.
+    startCash: raw.start_cash.toNumber() || board.rules.startCash,
   };
 }
 

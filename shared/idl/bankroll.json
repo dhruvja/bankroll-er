@@ -832,6 +832,10 @@
         {
           "name": "theme",
           "type": "u8"
+        },
+        {
+          "name": "start_cash",
+          "type": "u64"
         }
       ]
     },
@@ -1451,7 +1455,7 @@
     {
       "code": 6001,
       "name": "InvalidConfig",
-      "msg": "Players must be 2-4, the target 2500, 5000 or 7000, and the theme 0-2"
+      "msg": "Players must be 2-4, start cash 1000, 1500 or 2000, the target 2500, 5000 or 7000 moved by start cash - 1500, and the theme 0-2"
     },
     {
       "code": 6002,
@@ -1874,6 +1878,15 @@
               "The host's board theme for this game, below `BOARD_THEMES`. Display only."
             ],
             "type": "u8"
+          },
+          {
+            "name": "start_cash",
+            "docs": [
+              "The host's pick from `START_CASH_OPTIONS`: every seat's cash before the turn-order bonus.",
+              "`target` is a `TARGETS` value moved by the same amount. Zero on a lobby opened before this",
+              "field existed, which plays as `START_CASH`."
+            ],
+            "type": "u64"
           }
         ]
       }

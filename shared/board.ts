@@ -10,7 +10,7 @@ export interface Board {
   groups: Record<string, number[]>;
   publics: number[];
   rules: {
-    startCash: number; salary: number; bankruptCashBelow: number; maxRollsPerTurn: number;
+    startCash: number; startCashOptions: number[]; salary: number; bankruptCashBelow: number; maxRollsPerTurn: number;
     jailSpace: number; jailTurns: number; bail: number; saleBps: number; maxBuildingsPerCity: number; tradeBonus: number;
     groupRentMultiplier: number; buildingRentMultipliers: number[]; targets: number[];
     seatBonusStepByTarget: Record<string, number>; defaultTargetByPlayers: Record<string, number>;
@@ -22,7 +22,9 @@ export interface Board {
 
 /** Frozen economy: 28 spaces, four houses and a hotel (sha256 495b4f28…, checked by tests/ts/board.test.ts). */
 export const board = boardJson as Board;
-export const BOARD_SHA256 = '1e77ee1484297ac66a105be4a89b3e90c02a1559a11762ddead397eaf0bed319';
+export const BOARD_SHA256 = '5b3e49da8943496a838a2bffaab2eb3f0f6f7ddb0a774e32378144db2fdab0a9';
 export const isProperty = (space: BoardSpace) => space.kind === 'city' || space.kind === 'public';
-/** Client default only; the program accepts any of the three targets. */
-export const defaultTarget = (players: number) => board.rules.defaultTargetByPlayers[String(players)] ?? board.rules.targets[0];
+/** Client default only: the program accepts any of the three targets, each moved by the start cash
+ * minus the standard start, so games run about as long at every start. */
+export const defaultTarget = (players: number, startCash = board.rules.startCash) =>
+  (board.rules.defaultTargetByPlayers[String(players)] ?? board.rules.targets[0]) + startCash - board.rules.startCash;
